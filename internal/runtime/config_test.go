@@ -75,3 +75,36 @@ func TestLoadConfigRequiresPolicyFileWhenApplyIsEnabled(t *testing.T) {
 		t.Fatal("apply mode without policy file unexpectedly accepted")
 	}
 }
+
+func TestLoadServerConfigNextHops(t *testing.T) {
+	config, err := LoadServerConfig(flag.NewFlagSet("test", flag.ContinueOnError), []string{
+		"--rtbh-next-hop-v4=192.0.2.254", "--rtbh-next-hop-v6=2001:db8::ffff",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.RTBHNextHopV4.String() != "192.0.2.254" || config.RTBHNextHopV6.String() != "2001:db8::ffff" {
+		t.Fatalf("next hops = %s, %s", config.RTBHNextHopV4, config.RTBHNextHopV6)
+	}
+}
+
+func TestLoadServerConfigNextHopDefaults(t *testing.T) {
+	config, err := LoadServerConfig(flag.NewFlagSet("test", flag.ContinueOnError), []string{"--router-id=192.0.2.9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.RTBHNextHopV4.String() != "192.0.2.9" || config.RTBHNextHopV6.String() != "::1" {
+		t.Fatalf("next hops = %s, %s", config.RTBHNextHopV4, config.RTBHNextHopV6)
+	}
+}
+
+func TestLoadServerConfigRejectsMismatchedNextHopFamily(t *testing.T) {
+	_, err := LoadServerConfig(flag.NewFlagSet("test", flag.ContinueOnError), []string{"--rtbh-next-hop-v4=2001:db8::1"})
+	if err == nil {
+		t.Fatal("LoadServerConfig accepted IPv6 v4 next hop")
+	}
+	_, err = LoadServerConfig(flag.NewFlagSet("test", flag.ContinueOnError), []string{"--rtbh-next-hop-v6=192.0.2.1"})
+	if err == nil {
+		t.Fatal("LoadServerConfig accepted IPv4 v6 next hop")
+	}
+}

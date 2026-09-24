@@ -23,6 +23,7 @@ var configEnvironmentKeys = []string{
 	"RTBH_MAX_SESSIONS", "RTBH_MAX_MESSAGE_BYTES", "RTBH_MAX_IN_FLIGHT",
 	"RTBH_RECONNECT_MIN", "RTBH_RECONNECT_MAX", "RTBH_POLICY_FILE", "RTBH_CURSOR_FILE",
 	"RTBH_DRY_RUN", "RTBH_SHUTDOWN_TIMEOUT",
+	"RTBH_NEXT_HOP_V4", "RTBH_NEXT_HOP_V6",
 }
 
 type Config struct {
@@ -43,6 +44,8 @@ type Config struct {
 	CursorFile          string
 	DryRun              bool
 	ShutdownTimeout     time.Duration
+	RTBHNextHopV4       netip.Addr
+	RTBHNextHopV6       netip.Addr
 }
 
 func DefaultConfig() Config {
@@ -61,6 +64,7 @@ func DefaultConfig() Config {
 		ReconnectMax:        5 * time.Second,
 		DryRun:              true,
 		ShutdownTimeout:     5 * time.Second,
+		RTBHNextHopV6:       netip.MustParseAddr("::1"),
 	}
 }
 
@@ -98,6 +102,11 @@ func loadConfig(fs *flag.FlagSet, args []string, mode configMode) (Config, error
 	routerID := config.RouterID.String()
 	listenRanges := joinPrefixes(config.ListenRanges)
 	allowedASNs := joinASNs(config.AllowedASNs)
+	rtbhNextHopV4 := ""
+	if config.RTBHNextHopV4.IsValid() {
+		rtbhNextHopV4 = config.RTBHNextHopV4.String()
+	}
+	rtbhNextHopV6 := config.RTBHNextHopV6.String()
 	if mode != configAgent {
 		fs.StringVar(&localASN, "local-asn", localASN, "local BGP ASN")
 		fs.StringVar(&routerID, "router-id", routerID, "IPv4 BGP router ID")
@@ -110,6 +119,8 @@ func loadConfig(fs *flag.FlagSet, args []string, mode configMode) (Config, error
 		fs.DurationVar(&config.ShutdownTimeout, "shutdown-timeout", config.ShutdownTimeout, "graceful shutdown timeout")
 		fs.IntVar(&config.SyncMaxMessageBytes, "sync-max-message-bytes", config.SyncMaxMessageBytes, "alias for --max-message-bytes")
 		fs.IntVar(&config.SyncMaxInFlight, "sync-max-inflight", config.SyncMaxInFlight, "alias for --max-in-flight")
+		fs.StringVar(&rtbhNextHopV4, "rtbh-next-hop-v4", rtbhNextHopV4, "RTBH route IPv4 next hop; defaults to router ID")
+		fs.StringVar(&rtbhNextHopV6, "rtbh-next-hop-v6", rtbhNextHopV6, "RTBH route IPv6 next hop")
 	}
 	if mode != configServer {
 		fs.StringVar(&config.SyncServerAddress, "sync-server", config.SyncServerAddress, "policy-sync server address")
@@ -136,6 +147,14 @@ func loadConfig(fs *flag.FlagSet, args []string, mode configMode) (Config, error
 	config.RouterID, err = netip.ParseAddr(routerID)
 	if err != nil || !config.RouterID.Is4() {
 		return Config{}, errors.New("runtime: router ID must be IPv4")
+	}
+	config.RTBHNextHopV4, err = parseNextHop(rtbhNextHopV4, config.RouterID)
+	if err != nil {
+		return Config{}, err
+	}
+	config.RTBHNextHopV6, err = parseNextHop(rtbhNextHopV6, netip.MustParseAddr("::1"))
+	if err != nil {
+		return Config{}, err
 	}
 	config.ListenRanges, err = parsePrefixes(listenRanges)
 	if err != nil {
@@ -284,8 +303,38 @@ func applyEnvironment(config *Config) error {
 	if config.DryRun, err = envBool("RTBH_DRY_RUN", config.DryRun); err != nil {
 		return err
 	}
+	if raw := os.Getenv("RTBH_NEXT_HOP_V4"); raw != "" {
+		config.RTBHNextHopV4, err = netip.ParseAddr(raw)
+		if err != nil {
+			return fmt.Errorf("runtime: RTBH_NEXT_HOP_V4: %w", err)
+		}
+	}
+	if raw := os.Getenv("RTBH_NEXT_HOP_V6"); raw != "" {
+		config.RTBHNextHopV6, err = netip.ParseAddr(raw)
+		if err != nil {
+			return fmt.Errorf("runtime: RTBH_NEXT_HOP_V6: %w", err)
+		}
+	}
 	config.ShutdownTimeout, err = envDuration("RTBH_SHUTDOWN_TIMEOUT", config.ShutdownTimeout)
 	return err
+}
+
+func parseNextHop(raw string, fallback netip.Addr) (netip.Addr, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	nextHop, err := netip.ParseAddr(raw)
+	if err != nil || nextHop.Is4() != fallback.Is4() {
+		return netip.Addr{}, fmt.Errorf("runtime: next hop %q must be %s", raw, familyName(fallback))
+	}
+	return nextHop, nil
+}
+
+func familyName(addr netip.Addr) string {
+	if addr.Is4() {
+		return "IPv4"
+	}
+	return "IPv6"
 }
 
 func parsePrefixes(raw string) ([]netip.Prefix, error) {
