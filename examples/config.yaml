@@ -1,0 +1,30 @@
+# Example configuration
+# Copy to a private deployment location. Do not commit credentials or production values.
+
+listen_address: "127.0.0.1:179"
+# Production uses the native in-process BGP listener on TCP/179.
+# Dynamic passive neighbors must initiate the session.
+listen_ranges:
+  - "127.0.0.1/32"
+  - "192.0.2.0/24"
+
+local_asn: 65000
+router_id: "192.0.2.1"
+peer_group: "rtbh-dynamic"
+
+# Optional. Omit to allow any ASN that passes the other checks.
+allowed_asns:
+  - 64512
+max_sessions: 32
+
+dry_run: true
+
+policy_sync:
+  # RPC is for policy synchronization only, never general BGP control.
+  endpoint: "unix:///run/rtbh-panel/policy-sync.sock"
+  request_timeout: "5s"
+  max_message_bytes: 1048576
+
+# Safe default: reject. Unknown peers, invalid policies, authorization failures,
+# and policy-sync errors must not advertise routes.
+default_action: reject

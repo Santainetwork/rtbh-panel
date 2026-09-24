@@ -1,0 +1,24 @@
+[Unit]
+Description=rtbh-panel policy dashboard and in-process BGP listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rtbh-panel
+Group=rtbh-panel
+ExecStart=/usr/local/bin/rtbh-panel --config /etc/rtbh-panel/config.yaml
+Restart=on-failure
+RestartSec=5s
+
+# TCP/179 is privileged. Grant only the capability needed to bind it.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/rtbh-panel
+
+[Install]
+WantedBy=multi-user.target
