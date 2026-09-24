@@ -15,12 +15,13 @@ import (
 )
 
 type Config struct {
-	LocalASN     uint32
-	RouterID     netip.Addr
-	ListenPort   int32
-	ListenRanges []netip.Prefix
-	AllowedASNs  []uint32
-	MaxSessions  int
+	LocalASN        uint32
+	RouterID        netip.Addr
+	ListenAddresses []string
+	ListenPort      int32
+	ListenRanges    []netip.Prefix
+	AllowedASNs     []uint32
+	MaxSessions     int
 }
 
 type Status struct {
@@ -187,7 +188,7 @@ func (e *Engine) Start(ctx context.Context) error {
 			_ = e.bgp.StopBgp(context.Background(), &api.StopBgpRequest{})
 		}
 	}()
-	if err := e.bgp.StartBgp(ctx, &api.StartBgpRequest{Global: &api.Global{Asn: e.config.LocalASN, RouterId: e.config.RouterID.String(), ListenPort: e.config.ListenPort}}); err != nil {
+	if err := e.bgp.StartBgp(ctx, &api.StartBgpRequest{Global: &api.Global{Asn: e.config.LocalASN, RouterId: e.config.RouterID.String(), ListenAddresses: append([]string(nil), e.config.ListenAddresses...), ListenPort: e.config.ListenPort}}); err != nil {
 		return fmt.Errorf("start GoBGP: %w", err)
 	}
 	started = true
