@@ -30,6 +30,15 @@ func (f *fakeBackend) MutatePolicy(_ context.Context, mutation PolicyMutation) e
 
 func authorized(*http.Request) bool { return true }
 
+func TestConfigReportsBackendDryRunMode(t *testing.T) {
+	backend := &fakeBackend{config: Config{DryRun: true}}
+	response := httptest.NewRecorder()
+	NewHandler(backend, authorized).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"dry_run":true`) {
+		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestConfigUpdateDefaultsToDryRunAndRejectsNeighborFields(t *testing.T) {
 	backend := &fakeBackend{}
 	handler := NewHandler(backend, authorized)

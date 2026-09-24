@@ -22,6 +22,7 @@ type Config struct {
 	AllowedASNs   []uint32 `json:"allowed_asns,omitempty"`
 	MaxSessions   int      `json:"max_sessions"`
 	DefaultPolicy string   `json:"default_policy"`
+	DryRun        bool     `json:"dry_run"`
 }
 
 type Peer struct {

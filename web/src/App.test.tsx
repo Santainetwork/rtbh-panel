@@ -15,13 +15,51 @@ describe("RTBH dashboard", () => {
     expect(screen.getByText("198.51.100.0/24")).toBeInTheDocument()
     expect(screen.getAllByText("AS64512").length).toBeGreaterThan(0)
     expect(screen.getAllByText("DRY RUN").length).toBeGreaterThan(0)
+    expect(screen.getByText("LOCAL MOCK")).toBeInTheDocument()
     expect(screen.queryByLabelText(/neighbor address/i)).not.toBeInTheDocument()
+  })
+
+  it("shows live API and apply-enabled status from the snapshot", async () => {
+    const backing = createMockApi()
+    const snapshot = await backing.snapshot()
+    const api: DashboardApi = {
+      snapshot: async () => ({ ...snapshot, source: "http", config: { ...snapshot.config, dryRun: false } }),
+      mutate: (mutation) => backing.mutate(mutation),
+    }
+
+    render(<App api={api} />)
+
+    expect(await screen.findByText("LOCAL API")).toBeInTheDocument()
+    expect(screen.getByText("APPLY ENABLED")).toBeInTheDocument()
+    expect(screen.queryByText("LOCAL MOCK")).not.toBeInTheDocument()
+  })
+
+  it("keeps apply disabled when live backend remains in dry-run mode", async () => {
+    const backing = createMockApi()
+    const api: DashboardApi = { snapshot: () => backing.snapshot(), mutate: vi.fn((mutation) => backing.mutate(mutation)) }
+    const user = userEvent.setup()
+    render(<App api={api} />)
+
+    await user.click(await screen.findByRole("button", { name: "Add prefix" }))
+    await user.type(screen.getByLabelText("Canonical CIDR"), "203.0.113.80/32")
+    await user.click(screen.getByRole("button", { name: "Run dry-run" }))
+    await screen.findByText("Dry-run approved")
+    await user.click(screen.getByText(/authorize apply/i))
+
+    expect(screen.getByRole("button", { name: "Apply mutation" })).toBeDisabled()
+    expect(api.mutate).toHaveBeenCalledTimes(1)
   })
 
   it("previews first and applies only after explicit confirmation", async () => {
     const backing = createMockApi()
     const mutate = vi.fn((mutation: Mutation) => backing.mutate(mutation))
-    const api: DashboardApi = { snapshot: () => backing.snapshot(), mutate }
+    const api: DashboardApi = {
+      snapshot: async () => {
+        const snapshot = await backing.snapshot()
+        return { ...snapshot, config: { ...snapshot.config, dryRun: false } }
+      },
+      mutate,
+    }
     const user = userEvent.setup()
     render(<App api={api} />)
 

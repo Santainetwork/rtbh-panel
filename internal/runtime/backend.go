@@ -57,6 +57,7 @@ func (b *dashboardBackend) Config(context.Context) (dashboard.Config, error) {
 		AllowedASNs:   append([]uint32(nil), b.config.AllowedASNs...),
 		MaxSessions:   b.config.MaxSessions,
 		DefaultPolicy: "reject",
+		DryRun:        b.config.DryRun,
 	}, nil
 }
 

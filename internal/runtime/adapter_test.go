@@ -92,6 +92,19 @@ func TestDashboardBackendRejectsApplyWhileDryRunEnabled(t *testing.T) {
 	}
 }
 
+func TestDashboardBackendReportsDryRunMode(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.DryRun = false
+	backend := &dashboardBackend{config: cfg, store: policystore.New()}
+	config, err := backend.Config(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.DryRun {
+		t.Fatal("dashboard config reports dry-run while apply mode is enabled")
+	}
+}
+
 type noOpAdapter struct{}
 
 func (noOpAdapter) Apply(context.Context, agentrpc.PolicyChange) error { return nil }

@@ -32,6 +32,7 @@ export interface AuditEntry {
 }
 
 export interface DashboardSnapshot {
+  source: "mock" | "http"
   config: DashboardConfig
   peers: Peer[]
   blocklist: string[]
@@ -58,6 +59,7 @@ export interface DashboardApi {
 }
 
 const initialSnapshot: DashboardSnapshot = {
+  source: "mock",
   config: {
     localAsn: 65000,
     routerId: "192.0.2.1",
@@ -126,11 +128,12 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
   return {
     async snapshot() {
       const [config, peers] = await Promise.all([
-        request<{ local_asn: number; router_id: string; listen_ranges: string[]; peer_group: string; allowed_asns?: number[]; max_sessions: number; default_policy: "reject" }>("/api/config"),
+        request<{ local_asn: number; router_id: string; listen_ranges: string[]; peer_group: string; allowed_asns?: number[]; max_sessions: number; default_policy: "reject"; dry_run?: boolean }>("/api/config"),
         request<Array<{ address: string; asn: number; state: PeerState }>>("/api/peers"),
       ])
       return {
-        config: { localAsn: config.local_asn, routerId: config.router_id, listenRanges: config.listen_ranges, peerGroup: config.peer_group, allowedAsns: config.allowed_asns ?? [], maxSessions: config.max_sessions, defaultPolicy: config.default_policy, dryRun: true },
+        source: "http",
+        config: { localAsn: config.local_asn, routerId: config.router_id, listenRanges: config.listen_ranges, peerGroup: config.peer_group, allowedAsns: config.allowed_asns ?? [], maxSessions: config.max_sessions, defaultPolicy: config.default_policy, dryRun: config.dry_run !== false },
         peers: peers.map((peer) => ({ ...peer, uptime: "—", received: 0 })),
         blocklist: [], whitelist: [], audit: [],
       }

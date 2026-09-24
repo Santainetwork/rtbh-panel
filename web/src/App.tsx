@@ -113,7 +113,7 @@ function PolicyTable({ entries, list, onMutate }: { entries: string[]; list: Pol
   )
 }
 
-function MutationDialog({ open, initial, onOpenChange, onComplete, api }: { open: boolean; initial: Omit<Mutation, "apply">; onOpenChange: (open: boolean) => void; onComplete: () => Promise<void>; api: DashboardApi }) {
+function MutationDialog({ open, initial, onOpenChange, onComplete, api, dryRun }: { open: boolean; initial: Omit<Mutation, "apply">; onOpenChange: (open: boolean) => void; onComplete: () => Promise<void>; api: DashboardApi; dryRun: boolean }) {
   const [list, setList] = useState<PolicyList>(initial.list)
   const [action, setAction] = useState<PolicyAction>(initial.action)
   const [prefix, setPrefix] = useState(initial.prefix)
@@ -164,7 +164,7 @@ function MutationDialog({ open, initial, onOpenChange, onComplete, api }: { open
         {previewed && <label className="confirm-row"><Checkbox checked={confirmed} onCheckedChange={(value) => setConfirmed(value === true)} /><span>I reviewed this exact mutation and authorize apply.</span></label>}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          {!previewed ? <Button disabled={!valid || busy} onClick={preview}>Run dry-run</Button> : <Button variant="destructive" disabled={!confirmed || busy} onClick={apply}>Apply mutation</Button>}
+          {!previewed ? <Button disabled={!valid || busy} onClick={preview}>Run dry-run</Button> : <Button variant="destructive" disabled={dryRun || !confirmed || busy} onClick={apply}>Apply mutation</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -198,14 +198,14 @@ function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; re
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-        <SidebarFooter><div className="environment-chip"><CircleDot /><div><span>Environment</span><strong>LOCAL MOCK</strong></div></div></SidebarFooter>
+        <SidebarFooter><div className="environment-chip"><CircleDot /><div><span>Environment</span><strong>{snapshot.source === "http" ? "LOCAL API" : "LOCAL MOCK"}</strong></div></div></SidebarFooter>
         <SidebarRail />
       </Sidebar>
       <SidebarInset>
-        <header className="topbar"><SidebarTrigger /><Separator orientation="vertical" className="h-5" /><div className="breadcrumb"><span>Control plane</span><ChevronRight /><strong>Overview</strong></div><div className="topbar-actions"><Badge className="dry-run-badge" variant="outline"><AlertTriangle /> DRY RUN</Badge><Button variant="outline" size="sm" onClick={refresh}><RefreshCw /> Refresh</Button></div></header>
+        <header className="topbar"><SidebarTrigger /><Separator orientation="vertical" className="h-5" /><div className="breadcrumb"><span>Control plane</span><ChevronRight /><strong>Overview</strong></div><div className="topbar-actions"><Badge className="dry-run-badge" variant="outline"><AlertTriangle /> {snapshot.config.dryRun ? "DRY RUN" : "APPLY ENABLED"}</Badge><Button variant="outline" size="sm" onClick={refresh}><RefreshCw /> Refresh</Button></div></header>
         <main id="overview" className="dashboard-main">
           <section className="hero-row"><div><p className="eyebrow accent-text">NETWORK DEFENSE / LIVE POSTURE</p><h1>Routing control, without surprises.</h1><p>Observe dynamic BGP sessions. Stage prefix policy changes. Apply only after deliberate confirmation.</p></div><div className="system-pulse"><span></span><div><small>CONTROL PLANE</small><strong>Operational</strong></div></div></section>
-          <Alert className="safety-banner"><ShieldCheck /><AlertTitle>Safe operating mode</AlertTitle><AlertDescription>All policy actions begin as dry-run. Routes remain unchanged until an operator confirms apply.</AlertDescription></Alert>
+          <Alert className="safety-banner"><ShieldCheck /><AlertTitle>{snapshot.config.dryRun ? "Safe operating mode" : "Apply mode enabled"}</AlertTitle><AlertDescription>All policy actions begin as dry-run. Routes remain unchanged until an operator confirms apply.</AlertDescription></Alert>
           <section className="metrics-grid">
             <MetricCard label="BGP sessions" value={`${established} / ${snapshot.config.maxSessions}`} detail="Established / session ceiling" icon={Network} tone="safe" />
             <MetricCard label="Local ASN" value={`AS${snapshot.config.localAsn}`} detail={`Router ID ${snapshot.config.routerId}`} icon={Braces} />
@@ -226,7 +226,7 @@ function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; re
           <section id="activity"><div className="section-heading"><div><p className="eyebrow">IMMUTABLE TRAIL</p><h2>Recent activity</h2></div><Badge variant="secondary"><Clock3 /> newest first</Badge></div><Card><CardContent><div className="activity-list">{snapshot.audit.map((event) => <div className="activity-row" key={event.id}><div className={`activity-icon ${event.result}`} >{event.result === "allowed" ? <CheckCircle2 /> : <ShieldX />}</div><div className="activity-main"><strong>{event.action}</strong><code>{event.target}</code><span>by {event.actor}</span></div><div className="activity-meta"><Badge variant={event.mode === "DRY RUN" ? "outline" : "secondary"}>{event.mode}</Badge><time>{event.timestamp}</time></div></div>)}</div></CardContent></Card></section>
         </main>
       </SidebarInset>
-      {dialogOpen && <MutationDialog open initial={mutation} onOpenChange={setDialogOpen} onComplete={refresh} api={api} />}
+      {dialogOpen && <MutationDialog open initial={mutation} onOpenChange={setDialogOpen} onComplete={refresh} api={api} dryRun={snapshot.config.dryRun} />}
     </>
   )
 }
