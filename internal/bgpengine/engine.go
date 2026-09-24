@@ -24,6 +24,15 @@ type Config struct {
 	MaxSessions     int
 }
 
+// BlackholeCommunity is the RFC 7999 well-known community
+// NO_EXPORT (0xFFFFFF01) is not used; this is BLACKHOLE (65535:666).
+const BlackholeCommunity uint32 = 0xffff029a
+
+const (
+	rtbhCommunitySetName = "rtbh-blackhole-community"
+	rtbhExportPolicyName = "rtbh-export-only-blackhole"
+)
+
 type Status struct {
 	Running      bool
 	LocalASN     uint32
@@ -114,14 +123,41 @@ func (c Config) validate() error {
 }
 
 func buildPeerGroup(c Config) *api.PeerGroup {
+	_, policy, assignment := buildRTBHExportPolicy()
+	assignment.Policies = []*api.Policy{policy}
 	return &api.PeerGroup{
 		Conf:      &api.PeerGroupConf{PeerGroupName: "rtbh-dynamic", PeerAsn: 0},
 		Transport: &api.Transport{PassiveMode: true},
 		ApplyPolicy: &api.ApplyPolicy{
 			ImportPolicy: &api.PolicyAssignment{DefaultAction: api.RouteAction_ROUTE_ACTION_REJECT},
-			ExportPolicy: &api.PolicyAssignment{DefaultAction: api.RouteAction_ROUTE_ACTION_REJECT},
+			ExportPolicy: assignment,
 		},
 	}
+}
+
+func buildRTBHExportPolicy() (*api.DefinedSet, *api.Policy, *api.PolicyAssignment) {
+	set := &api.DefinedSet{
+		DefinedType: api.DefinedType_DEFINED_TYPE_COMMUNITY,
+		Name:        rtbhCommunitySetName,
+		List:        []string{"65535:666"},
+	}
+	policy := &api.Policy{
+		Name: rtbhExportPolicyName,
+		Statements: []*api.Statement{{
+			Name: "accept-rfc7999-blackhole",
+			Conditions: &api.Conditions{CommunitySet: &api.MatchSet{
+				Type: api.MatchSet_TYPE_ANY,
+				Name: rtbhCommunitySetName,
+			}},
+			Actions: &api.Actions{RouteAction: api.RouteAction_ROUTE_ACTION_ACCEPT},
+		}},
+	}
+	assignment := &api.PolicyAssignment{
+		Direction:     api.PolicyDirection_POLICY_DIRECTION_EXPORT,
+		Policies:      []*api.Policy{policy},
+		DefaultAction: api.RouteAction_ROUTE_ACTION_REJECT,
+	}
+	return set, policy, assignment
 }
 
 func routePath(route Route) (*apiutil.Path, error) {
@@ -192,6 +228,13 @@ func (e *Engine) Start(ctx context.Context) error {
 		return fmt.Errorf("start GoBGP: %w", err)
 	}
 	started = true
+	set, policy, _ := buildRTBHExportPolicy()
+	if err := e.bgp.AddDefinedSet(ctx, &api.AddDefinedSetRequest{DefinedSet: set}); err != nil {
+		return fmt.Errorf("add RTBH community set: %w", err)
+	}
+	if err := e.bgp.AddPolicy(ctx, &api.AddPolicyRequest{Policy: policy}); err != nil {
+		return fmt.Errorf("add RTBH export policy: %w", err)
+	}
 	if err := e.bgp.AddPeerGroup(ctx, &api.AddPeerGroupRequest{PeerGroup: buildPeerGroup(e.config)}); err != nil {
 		return fmt.Errorf("add peer group: %w", err)
 	}

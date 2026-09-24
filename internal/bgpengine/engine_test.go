@@ -67,6 +67,9 @@ func TestBuildPeerGroupLearnsASNAndRejectsRoutesByDefault(t *testing.T) {
 	if got := peerGroup.GetApplyPolicy().GetExportPolicy().GetDefaultAction(); got.String() != "ROUTE_ACTION_REJECT" {
 		t.Fatalf("export default = %s, want ROUTE_ACTION_REJECT", got)
 	}
+	if got := len(peerGroup.GetApplyPolicy().GetExportPolicy().GetPolicies()); got != 1 {
+		t.Fatalf("export policies = %d, want 1", got)
+	}
 }
 
 func TestSessionPolicyAllowsOnlyConfiguredASNAndCapacity(t *testing.T) {
@@ -132,6 +135,48 @@ func TestRoutePathRejectsAddressFamilyMismatch(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("routePath() = nil error, want address family mismatch")
+	}
+}
+
+func TestRoutePathIncludesBlackholeCommunity(t *testing.T) {
+	route := Route{
+		Prefix:      netip.MustParsePrefix("203.0.113.0/24"),
+		NextHop:     netip.MustParseAddr("192.0.2.1"),
+		Communities: []uint32{BlackholeCommunity},
+	}
+	path, err := routePath(route)
+	if err != nil {
+		t.Fatalf("routePath() error = %v", err)
+	}
+	found := false
+	for _, attr := range path.Attrs {
+		if communities, ok := attr.(*bgp.PathAttributeCommunities); ok &&
+			len(communities.Value) == 1 && communities.Value[0] == BlackholeCommunity {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("routePath() missing RFC 7999 community: %#v", path.Attrs)
+	}
+}
+
+func TestBuildRTBHExportPolicyAcceptsOnlyBlackholeCommunity(t *testing.T) {
+	set, policy, assignment := buildRTBHExportPolicy()
+	if set.GetDefinedType() != api.DefinedType_DEFINED_TYPE_COMMUNITY {
+		t.Fatalf("defined type = %s", set.GetDefinedType())
+	}
+	if len(set.GetList()) != 1 || set.GetList()[0] != "65535:666" {
+		t.Fatalf("community list = %v", set.GetList())
+	}
+	statement := policy.GetStatements()[0]
+	if statement.GetConditions().GetCommunitySet().GetType() != api.MatchSet_TYPE_ANY {
+		t.Fatalf("community match = %s", statement.GetConditions().GetCommunitySet().GetType())
+	}
+	if statement.GetActions().GetRouteAction() != api.RouteAction_ROUTE_ACTION_ACCEPT {
+		t.Fatalf("route action = %s", statement.GetActions().GetRouteAction())
+	}
+	if assignment.GetDefaultAction() != api.RouteAction_ROUTE_ACTION_REJECT {
+		t.Fatalf("default action = %s", assignment.GetDefaultAction())
 	}
 }
 
