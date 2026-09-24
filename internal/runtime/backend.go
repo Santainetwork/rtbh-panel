@@ -38,10 +38,11 @@ func (a *policyStoreAdapter) Apply(_ context.Context, change agentrpc.PolicyChan
 }
 
 type dashboardBackend struct {
-	config  Config
-	engine  Engine
-	store   *policystore.Store
-	publish func(dashboard.PolicyMutation)
+	config     Config
+	engine     Engine
+	store      *policystore.Store
+	publish    func(dashboard.PolicyMutation)
+	controller *policyController
 }
 
 func (b *dashboardBackend) Config(context.Context) (dashboard.Config, error) {
@@ -78,6 +79,9 @@ func (b *dashboardBackend) EstablishedPeers(ctx context.Context) ([]dashboard.Pe
 }
 
 func (b *dashboardBackend) MutatePolicy(ctx context.Context, mutation dashboard.PolicyMutation) error {
+	if b.controller != nil {
+		return b.controller.Apply(ctx, mutation)
+	}
 	if b.config.DryRun {
 		return errors.New("runtime: apply rejected while dry-run is enabled")
 	}

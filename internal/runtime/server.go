@@ -20,13 +20,16 @@ type Engine interface {
 	Start(context.Context) error
 	Stop(context.Context) error
 	Status(context.Context) (bgpengine.Status, error)
+	Announce(bgpengine.Route) error
+	Withdraw(bgpengine.Route) error
 }
 
 type Server struct {
-	config Config
-	engine Engine
-	store  *policystore.Store
-	queue  *policyQueue
+	config     Config
+	engine     Engine
+	store      *policystore.Store
+	queue      *policyQueue
+	controller *policyController
 
 	started  chan struct{}
 	once     sync.Once
@@ -76,7 +79,11 @@ func NewServer(config Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{config: config, engine: engine, store: store, queue: newPolicyQueue(), cursor: cursor, started: make(chan struct{})}, nil
+	controller := newPolicyController(store, engine, config.DryRun, config.RTBHNextHopV4, config.RTBHNextHopV6, nil)
+	if !config.RTBHNextHopV4.IsValid() {
+		controller.nextHopV4 = config.RouterID
+	}
+	return &Server{config: config, engine: engine, store: store, queue: newPolicyQueue(), controller: controller, cursor: cursor, started: make(chan struct{})}, nil
 }
 
 func (s *Server) Started() <-chan struct{} { return s.started }
@@ -99,6 +106,10 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := s.engine.Start(ctx); err != nil {
 		return fmt.Errorf("runtime: start BGP engine: %w", err)
 	}
+	s.controller.publish = s.queue.publish
+	if err := s.controller.Reconcile(time.Now()); err != nil {
+		return errors.Join(fmt.Errorf("runtime: reconcile RTBH routes: %w", err), s.engine.Stop(context.Background()))
+	}
 	httpListener, err := net.Listen("tcp", s.config.HTTPListenAddress)
 	if err != nil {
 		return errors.Join(fmt.Errorf("runtime: dashboard listen: %w", err), s.engine.Stop(context.Background()))
@@ -114,10 +125,11 @@ func (s *Server) Run(ctx context.Context) error {
 	s.mu.Unlock()
 	httpServer := &http.Server{
 		Handler: dashboard.NewHandler(&dashboardBackend{
-			config:  s.config,
-			engine:  s.engine,
-			store:   s.store,
-			publish: s.queue.publish,
+			config:     s.config,
+			engine:     s.engine,
+			store:      s.store,
+			publish:    s.queue.publish,
+			controller: s.controller,
 		}, func(*http.Request) bool { return true }),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

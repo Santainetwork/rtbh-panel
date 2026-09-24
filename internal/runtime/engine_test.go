@@ -12,8 +12,10 @@ type stubEngine struct {
 	status bgpengine.Status
 }
 
-func (*stubEngine) Start(context.Context) error { return nil }
-func (*stubEngine) Stop(context.Context) error  { return nil }
+func (*stubEngine) Start(context.Context) error    { return nil }
+func (*stubEngine) Stop(context.Context) error     { return nil }
+func (*stubEngine) Announce(bgpengine.Route) error { return nil }
+func (*stubEngine) Withdraw(bgpengine.Route) error { return nil }
 func (e *stubEngine) Status(context.Context) (bgpengine.Status, error) {
 	return e.status, nil
 }
