@@ -3,7 +3,14 @@ package bgpengine
 import (
 	"context"
 	"net/netip"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	api "github.com/osrg/gobgp/v4/api"
+	"github.com/osrg/gobgp/v4/pkg/apiutil"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/server"
 )
 
 func validConfig() Config {
@@ -153,5 +160,246 @@ func TestStartStopSnapshotWithoutPrivilegedPort(t *testing.T) {
 	}
 	if status.Sessions != 0 || len(status.Peers) != 0 {
 		t.Fatalf("peer status = sessions %d, peers %v", status.Sessions, status.Peers)
+	}
+}
+
+func TestLoopbackDynamicNeighborAllowsAnyASNWhenAllowlistUnset(t *testing.T) {
+	config := validConfig()
+	config.ListenPort = 2179
+	config.ListenRanges = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/24")}
+	config.AllowedASNs = nil
+	config.MaxSessions = 1
+	engine, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+
+	remote := server.NewBgpServer()
+	go remote.Serve()
+	if err := remote.StartBgp(context.Background(), &api.StartBgpRequest{Global: &api.Global{
+		Asn: 64513, RouterId: "2.2.2.2", ListenPort: -1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = remote.StopBgp(context.Background(), &api.StopBgpRequest{}) })
+	if err := remote.AddPeer(context.Background(), &api.AddPeerRequest{Peer: &api.Peer{
+		Conf:      &api.PeerConf{NeighborAddress: "127.0.0.1", PeerAsn: config.LocalASN},
+		Transport: &api.Transport{RemotePort: 2179},
+		Timers: &api.Timers{Config: &api.TimersConfig{
+			ConnectRetry:           1,
+			IdleHoldTimeAfterReset: 1,
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := engine.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Sessions == 1 && len(status.Peers) == 1 && status.Peers[0].ASN == 64513 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	status, _ := engine.Status(context.Background())
+	var remotePeers []string
+	_ = remote.ListPeer(context.Background(), &api.ListPeerRequest{}, func(peer *api.Peer) {
+		remotePeers = append(remotePeers, peer.String())
+	})
+	t.Fatalf("loopback dynamic neighbor did not establish: local=%#v remote=%#v", status, remotePeers)
+}
+
+func TestLoopbackDynamicNeighborRejectsDisallowedASN(t *testing.T) {
+	config := validConfig()
+	config.ListenPort = 3179
+	config.ListenRanges = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/24")}
+	config.AllowedASNs = []uint32{64513}
+	config.MaxSessions = 1
+	engine, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+
+	remote := server.NewBgpServer()
+	go remote.Serve()
+	if err := remote.StartBgp(context.Background(), &api.StartBgpRequest{Global: &api.Global{
+		Asn: 64514, RouterId: "3.3.3.3", ListenPort: -1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = remote.StopBgp(context.Background(), &api.StopBgpRequest{}) })
+	established := make(chan struct{}, 1)
+	reset := make(chan struct{}, 1)
+	var wasEstablished atomic.Bool
+	if err := remote.WatchEvent(context.Background(), server.WatchEventMessageCallbacks{
+		OnPeerUpdate: func(event *apiutil.WatchEventMessage_PeerEvent, _ time.Time) {
+			if event.Peer.State.SessionState == bgp.BGP_FSM_ESTABLISHED {
+				wasEstablished.Store(true)
+				select {
+				case established <- struct{}{}:
+				default:
+				}
+			} else if wasEstablished.Load() {
+				select {
+				case reset <- struct{}{}:
+				default:
+				}
+			}
+		},
+	}, server.WatchPeer()); err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.AddPeer(context.Background(), &api.AddPeerRequest{Peer: &api.Peer{
+		Conf:      &api.PeerConf{NeighborAddress: "127.0.0.1", PeerAsn: config.LocalASN},
+		Transport: &api.Transport{RemotePort: 3179},
+		Timers:    &api.Timers{Config: &api.TimersConfig{ConnectRetry: 1, IdleHoldTimeAfterReset: 1}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-established:
+	case <-time.After(5 * time.Second):
+		t.Fatal("remote never established, rejection path was not exercised")
+	}
+	select {
+	case <-reset:
+	case <-time.After(5 * time.Second):
+		t.Fatal("disallowed ASN was not reset")
+	}
+	if err := remote.DisablePeer(context.Background(), &api.DisablePeerRequest{Address: "127.0.0.1"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		status, err := engine.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Sessions == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("disallowed ASN remained established: %#v", status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestLoopbackDynamicNeighborEnforcesMaxSessions(t *testing.T) {
+	config := validConfig()
+	config.ListenPort = 4179
+	config.ListenRanges = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/24")}
+	config.AllowedASNs = []uint32{64513}
+	config.MaxSessions = 1
+	engine, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+
+	startRemote := func(routerID, source string) (*server.BgpServer, <-chan struct{}, <-chan struct{}) {
+		remote := server.NewBgpServer()
+		go remote.Serve()
+		if err := remote.StartBgp(context.Background(), &api.StartBgpRequest{Global: &api.Global{
+			Asn: 64513, RouterId: routerID, ListenPort: -1,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = remote.StopBgp(context.Background(), &api.StopBgpRequest{}) })
+		established := make(chan struct{}, 1)
+		reset := make(chan struct{}, 1)
+		var wasEstablished atomic.Bool
+		if err := remote.WatchEvent(context.Background(), server.WatchEventMessageCallbacks{
+			OnPeerUpdate: func(event *apiutil.WatchEventMessage_PeerEvent, _ time.Time) {
+				if event.Peer.State.SessionState == bgp.BGP_FSM_ESTABLISHED {
+					wasEstablished.Store(true)
+					select {
+					case established <- struct{}{}:
+					default:
+					}
+				} else if wasEstablished.Load() {
+					select {
+					case reset <- struct{}{}:
+					default:
+					}
+				}
+			},
+		}, server.WatchPeer()); err != nil {
+			t.Fatal(err)
+		}
+		if err := remote.AddPeer(context.Background(), &api.AddPeerRequest{Peer: &api.Peer{
+			Conf:      &api.PeerConf{NeighborAddress: "127.0.0.1", PeerAsn: config.LocalASN},
+			Transport: &api.Transport{LocalAddress: source, RemotePort: 4179},
+			Timers:    &api.Timers{Config: &api.TimersConfig{ConnectRetry: 1, IdleHoldTimeAfterReset: 1}},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		return remote, established, reset
+	}
+
+	first, firstEstablished, _ := startRemote("4.4.4.4", "127.0.0.2")
+	select {
+	case <-firstEstablished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first session did not establish")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		status, err := engine.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Sessions == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("first session did not establish: %#v", status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	second, secondEstablished, secondReset := startRemote("5.5.5.5", "127.0.0.3")
+	t.Cleanup(func() {
+		_ = first.DisablePeer(context.Background(), &api.DisablePeerRequest{Address: "127.0.0.1"})
+		_ = second.DisablePeer(context.Background(), &api.DisablePeerRequest{Address: "127.0.0.1"})
+	})
+	select {
+	case <-secondEstablished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second session did not establish, limit path was not exercised")
+	}
+	select {
+	case <-secondReset:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second session was not reset at capacity")
+	}
+	if err := second.DisablePeer(context.Background(), &api.DisablePeerRequest{Address: "127.0.0.1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := engine.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Sessions > 1 {
+			t.Fatalf("session limit exceeded: %#v", status)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

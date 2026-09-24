@@ -249,6 +249,8 @@ func (e *Engine) onPeerUpdate(event *apiutil.WatchEventMessage_PeerEvent, _ time
 	if e.policy.admitPeer(address, peer.State.PeerASN) {
 		return
 	}
+	// ponytail: GoBGP reveals a dynamic peer's ASN at ESTABLISHED. Default-reject
+	// policies contain it until reset; use a pre-OPEN hook if GoBGP exposes one.
 	_ = e.bgp.ResetPeer(context.Background(), &api.ResetPeerRequest{Address: address, Communication: "remote ASN or session limit rejected"})
 }
 func (e *Engine) Announce(route Route) error {
