@@ -219,6 +219,39 @@ func TestOpenRejectsOrphanedExpiration(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsMalformedExpiration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	data := `{"blocklist":["192.0.2.0/24"],"expirations":{"not-a-prefix":"2030-01-01T00:00:00Z"}}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err == nil {
+		t.Fatal("Open accepted a malformed expiration key")
+	}
+}
+
+func TestOpenRejectsZeroExpiration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	data := `{"blocklist":["192.0.2.0/24"],"expirations":{"192.0.2.0/24":"0001-01-01T00:00:00Z"}}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err == nil {
+		t.Fatal("Open accepted a zero expiration")
+	}
+}
+
+func TestOpenRejectsDuplicateNormalizedExpiration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	data := `{"blocklist":["192.0.2.0/24"],"expirations":{"192.0.2.1/24":"2030-01-01T00:00:00Z","192.0.2.0/24":"2030-01-01T00:00:00Z"}}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err == nil {
+		t.Fatal("Open accepted duplicate normalized expiration keys")
+	}
+}
+
 func TestExpirationsReturnsCopy(t *testing.T) {
 	store := New()
 	expiry := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
