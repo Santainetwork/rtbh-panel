@@ -148,4 +148,4 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
   }
 }
 
-export const dashboardApi = import.meta.env.VITE_API_MODE === "http" ? createHttpApi() : createMockApi()
+export const dashboardApi = import.meta.env.PROD || import.meta.env.VITE_API_MODE === "http" ? createHttpApi() : createMockApi()

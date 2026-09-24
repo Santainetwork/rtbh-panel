@@ -154,3 +154,24 @@ func TestPolicyControllerExpiresDenyAndWithdraws(t *testing.T) {
 		t.Fatalf("withdrawn=%v expirations=%v", engine.withdrawn, store.Expirations())
 	}
 }
+
+func TestPolicyControllerUpdatesExpiryForExistingDeny(t *testing.T) {
+	controller, store, engine := testPolicyController(t, false)
+	prefix := netip.MustParsePrefix("203.0.113.0/24")
+	if _, err := store.Add(policystore.Blocklist, prefix); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Reconcile(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	expiry := time.Now().Add(time.Hour).UTC()
+	if err := controller.Apply(context.Background(), dashboard.PolicyMutation{Action: "add", List: "blocklist", Prefix: prefix.String(), ExpiresAt: &expiry}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := store.Expiry(prefix); !ok || !got.Equal(expiry) {
+		t.Fatalf("Expiry=%v, %v", got, ok)
+	}
+	if len(engine.announced) != 1 || len(engine.withdrawn) != 0 {
+		t.Fatalf("route delta changed during expiry update: announced=%v withdrawn=%v", engine.announced, engine.withdrawn)
+	}
+}

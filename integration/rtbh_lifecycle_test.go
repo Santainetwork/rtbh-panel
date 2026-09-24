@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -131,6 +132,14 @@ func TestRTBHRouteLifecycleOverLoopback(t *testing.T) {
 		t.Fatalf("remove deny status=%d", got)
 	}
 	waitPrefix(t, remote, "203.0.113.0/24", false)
+
+	expiresAt := time.Now().UTC().Add(time.Second).Format(time.RFC3339Nano)
+	expiring := fmt.Sprintf(`{"action":"add","prefix":"198.51.100.0/24","apply":true,"expires_at":%q}`, expiresAt)
+	if got := postPolicy(t, base, "/api/v1/block", expiring); got != http.StatusOK {
+		t.Fatalf("add expiring deny status=%d", got)
+	}
+	waitPrefix(t, remote, "198.51.100.0/24", true)
+	waitPrefix(t, remote, "198.51.100.0/24", false)
 
 	// Verify the same listener serves the embedded SPA and versioned API.
 	index, err := http.Get(base + "/")

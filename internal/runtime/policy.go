@@ -84,6 +84,9 @@ func (c *policyController) applyLocked(mutation dashboard.PolicyMutation) error 
 		if index < 0 {
 			*target = append(*target, prefix)
 			changed = true
+		} else if mutation.ExpiresAt != nil {
+			previous, ok := c.store.Expiry(prefix)
+			changed = !ok || !previous.Equal(*mutation.ExpiresAt)
 		}
 	case "remove", "delete":
 		if index >= 0 {
@@ -206,6 +209,9 @@ func (c *policyController) applyDelta(desired map[netip.Prefix]bgpengine.Route) 
 			continue
 		}
 		if err := c.engine.Withdraw(route); err != nil {
+			for _, removed := range withdrawn {
+				_ = c.engine.Announce(removed)
+			}
 			return fmt.Errorf("runtime: withdraw %s: %w", prefix, err)
 		}
 		withdrawn = append(withdrawn, route)
