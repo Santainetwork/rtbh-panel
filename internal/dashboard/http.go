@@ -5,10 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"html/template"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/netip"
+	"path"
 	"strings"
 	"time"
 )
@@ -52,21 +53,28 @@ type handler struct {
 	backend   Backend
 	authorize Authorizer
 	mux       *http.ServeMux
+	static    fs.FS
 }
 
-func NewHandler(backend Backend, authorize Authorizer) http.Handler {
+func NewHandler(backend Backend, authorize Authorizer, static ...fs.FS) http.Handler {
 	h := &handler{backend: backend, authorize: authorize, mux: http.NewServeMux()}
+	if len(static) > 0 {
+		h.static = static[0]
+	}
+	for _, prefix := range []string{"/api", "/api/v1"} {
+		h.mux.HandleFunc("GET "+prefix+"/config", h.getConfig)
+		h.mux.HandleFunc("PUT "+prefix+"/config", h.putConfig)
+		h.mux.HandleFunc("GET "+prefix+"/peers", h.getPeers)
+		h.mux.HandleFunc("POST "+prefix+"/block", h.mutate("blocklist"))
+		h.mux.HandleFunc("POST "+prefix+"/whitelist", h.mutate("whitelist"))
+	}
+	h.mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusNotFound, "not found") })
 	h.mux.HandleFunc("GET /", h.index)
-	h.mux.HandleFunc("GET /api/config", h.getConfig)
-	h.mux.HandleFunc("PUT /api/config", h.putConfig)
-	h.mux.HandleFunc("GET /api/peers", h.getPeers)
-	h.mux.HandleFunc("POST /api/block", h.mutate("blocklist"))
-	h.mux.HandleFunc("POST /api/whitelist", h.mutate("whitelist"))
 	return h
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")
@@ -77,17 +85,24 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
-var indexPage = template.Must(template.New("index").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>RTBH Panel</title><style>body{font:16px system-ui;max-width:60rem;margin:2rem auto;padding:0 1rem}code{background:#eee;padding:.2rem}</style></head>
-<body><main><h1>RTBH Panel</h1><p>Dynamic passive BGP status and policy controls.</p>
-<p>Mutations are dry-run unless <code>apply: true</code> is explicitly submitted.</p></main></body></html>`))
-
-func (h *handler) index(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := indexPage.Execute(w, nil); err != nil {
+func (h *handler) index(w http.ResponseWriter, r *http.Request) {
+	if h.static == nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<!doctype html><html><body><main><h1>RTBH Panel</h1></main></body></html>")
 		return
 	}
+	name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+	if name == "." || name == "" {
+		name = "index.html"
+	}
+	if _, err := fs.Stat(h.static, name); err != nil {
+		if path.Ext(name) != "" {
+			http.NotFound(w, r)
+			return
+		}
+		name = "index.html"
+	}
+	http.ServeFileFS(w, r, h.static, name)
 }
 
 func (h *handler) getConfig(w http.ResponseWriter, r *http.Request) {

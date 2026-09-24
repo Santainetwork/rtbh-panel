@@ -31,7 +31,7 @@ describe("HTTP dashboard API", () => {
   it("reports live source and backend apply mode", async () => {
     const fetcher = async (input: RequestInfo | URL) => {
       const path = String(input)
-      if (path === "/api/config") return new Response(JSON.stringify({
+      if (path === "/api/v1/config") return new Response(JSON.stringify({
         local_asn: 65000,
         router_id: "192.0.2.1",
         listen_ranges: ["127.0.0.0/24"],
@@ -41,7 +41,7 @@ describe("HTTP dashboard API", () => {
         default_policy: "reject",
         dry_run: false,
       }))
-      if (path === "/api/peers") return new Response("[]")
+      if (path === "/api/v1/peers") return new Response("[]")
       return new Response(null, { status: 404 })
     }
 

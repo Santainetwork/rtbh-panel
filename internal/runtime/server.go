@@ -14,6 +14,7 @@ import (
 	"github.com/arcelo/rtbh-panel/internal/bgpengine"
 	"github.com/arcelo/rtbh-panel/internal/dashboard"
 	"github.com/arcelo/rtbh-panel/internal/policystore"
+	webui "github.com/arcelo/rtbh-panel/web"
 )
 
 type Engine interface {
@@ -130,7 +131,7 @@ func (s *Server) Run(ctx context.Context) error {
 			store:      s.store,
 			publish:    s.queue.publish,
 			controller: s.controller,
-		}, func(*http.Request) bool { return true }),
+		}, func(*http.Request) bool { return true }, webui.Dist()),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

@@ -1,6 +1,6 @@
 .PHONY: build test integration race vet web-test web-build
 
-build:
+build: web-build
 	mkdir -p bin
 	go build -buildvcs=false -o bin/rtbh-server ./cmd/rtbh-server
 	go build -buildvcs=false -o bin/rtbh-agent ./cmd/rtbh-agent

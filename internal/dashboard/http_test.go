@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
@@ -140,5 +141,30 @@ func TestDashboardHasNoPerNeighborForm(t *testing.T) {
 	NewHandler(&fakeBackend{}, authorized).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
 	if response.Code != http.StatusOK || strings.Contains(strings.ToLower(response.Body.String()), "neighbor_ip") {
 		t.Fatalf("dashboard status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestDashboardServesStaticSPAAndVersionedAPI(t *testing.T) {
+	static := fstest.MapFS{
+		"index.html":    {Data: []byte("<html>app</html>")},
+		"assets/app.js": {Data: []byte("console.log(1)")},
+	}
+	handler := NewHandler(&fakeBackend{config: Config{DryRun: true}}, authorized, static)
+	for path, want := range map[string]struct {
+		status   int
+		contains string
+	}{
+		"/":               {http.StatusOK, "<html>app</html>"},
+		"/assets/app.js":  {http.StatusOK, "console.log(1)"},
+		"/policies":       {http.StatusOK, "<html>app</html>"},
+		"/api/v1/config":  {http.StatusOK, `"dry_run":true`},
+		"/api/config":     {http.StatusOK, `"dry_run":true`},
+		"/api/v1/missing": {http.StatusNotFound, `{"error":"not found"}`},
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != want.status || !strings.Contains(response.Body.String(), want.contains) {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
 	}
 }

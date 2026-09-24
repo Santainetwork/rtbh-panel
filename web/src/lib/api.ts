@@ -128,8 +128,8 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
   return {
     async snapshot() {
       const [config, peers] = await Promise.all([
-        request<{ local_asn: number; router_id: string; listen_ranges: string[]; peer_group: string; allowed_asns?: number[]; max_sessions: number; default_policy: "reject"; dry_run?: boolean }>("/api/config"),
-        request<Array<{ address: string; asn: number; state: PeerState }>>("/api/peers"),
+        request<{ local_asn: number; router_id: string; listen_ranges: string[]; peer_group: string; allowed_asns?: number[]; max_sessions: number; default_policy: "reject"; dry_run?: boolean }>("/api/v1/config"),
+        request<Array<{ address: string; asn: number; state: PeerState }>>("/api/v1/peers"),
       ])
       return {
         source: "http",
@@ -139,7 +139,7 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
       }
     },
     mutate(mutation) {
-      const path = mutation.list === "blocklist" ? "/api/block" : "/api/whitelist"
+      const path = mutation.list === "blocklist" ? "/api/v1/block" : "/api/v1/whitelist"
       return request<MutationResult>(path, {
         method: "POST",
         body: JSON.stringify({ action: mutation.action, prefix: mutation.prefix, apply: mutation.apply === true }),
