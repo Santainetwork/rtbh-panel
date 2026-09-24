@@ -3,9 +3,9 @@
 package agentrpc
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,9 +40,11 @@ type Resume struct {
 }
 
 type PolicyChange struct {
-	Operation string `json:"operation"`
-	List      string `json:"list"`
-	Prefix    string `json:"prefix"`
+	ID             string `json:"id"`
+	IdempotencyKey string `json:"idempotency_key"`
+	Operation      string `json:"operation"`
+	List           string `json:"list"`
+	Prefix         string `json:"prefix"`
 }
 
 type Message struct {
@@ -56,7 +58,6 @@ type Message struct {
 type Session struct {
 	conn   net.Conn
 	config Config
-	reader *bufio.Reader
 
 	readMu  sync.Mutex
 	writeMu sync.Mutex
@@ -85,7 +86,6 @@ func NewSession(conn net.Conn, config Config, resume Resume) (*Session, error) {
 	return &Session{
 		conn:          conn,
 		config:        config,
-		reader:        bufio.NewReaderSize(conn, config.MaxMessageBytes+1),
 		nextSequence:  next,
 		appliedCursor: resume.AppliedCursor,
 		peerCursor:    resume.PeerCursor,
@@ -201,28 +201,36 @@ func (s *Session) AppliedCursor() uint64 {
 func (s *Session) read(ctx context.Context) (Message, error) {
 	stop := setDeadline(ctx, s.conn.SetReadDeadline)
 	defer stop()
-	line, err := s.reader.ReadSlice('\n')
-	if errors.Is(err, bufio.ErrBufferFull) || len(line) > s.config.MaxMessageBytes {
-		return Message{}, ErrMessageTooLarge
-	}
-	if err != nil {
-		if errors.Is(err, io.EOF) && len(line) == 0 {
-			return Message{}, io.EOF
-		}
+	var header [4]byte
+	if _, err := io.ReadFull(s.conn, header[:]); err != nil {
 		if ctx.Err() != nil {
 			return Message{}, ctx.Err()
 		}
-		return Message{}, fmt.Errorf("read policy sync message: %w", err)
+		return Message{}, fmt.Errorf("read policy sync frame header: %w", err)
 	}
-	line = bytes.TrimSpace(line)
-	if len(line) == 0 {
+	size := binary.BigEndian.Uint32(header[:])
+	if size == 0 {
 		return Message{}, errors.New("empty policy sync message")
 	}
+	if uint64(size) > uint64(s.config.MaxMessageBytes) {
+		return Message{}, ErrMessageTooLarge
+	}
+	payload := make([]byte, int(size))
+	if _, err := io.ReadFull(s.conn, payload); err != nil {
+		if ctx.Err() != nil {
+			return Message{}, ctx.Err()
+		}
+		return Message{}, fmt.Errorf("read policy sync frame payload: %w", err)
+	}
 	var message Message
-	decoder := json.NewDecoder(bytes.NewReader(line))
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&message); err != nil {
 		return Message{}, fmt.Errorf("decode policy sync message: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return Message{}, errors.New("policy sync frame must contain one JSON value")
 	}
 	return message, nil
 }
@@ -232,19 +240,40 @@ func (s *Session) write(ctx context.Context, message Message) error {
 	if err != nil {
 		return fmt.Errorf("encode policy sync message: %w", err)
 	}
-	data = append(data, '\n')
 	if len(data) > s.config.MaxMessageBytes {
 		return ErrMessageTooLarge
 	}
+	var header [4]byte
+	binary.BigEndian.PutUint32(header[:], uint32(len(data)))
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	stop := setDeadline(ctx, s.conn.SetWriteDeadline)
 	defer stop()
-	if _, err := s.conn.Write(data); err != nil {
+	if err := writeFull(s.conn, header[:]); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return fmt.Errorf("write policy sync message: %w", err)
+		return fmt.Errorf("write policy sync frame header: %w", err)
+	}
+	if err := writeFull(s.conn, data); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("write policy sync frame payload: %w", err)
+	}
+	return nil
+}
+
+func writeFull(writer io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := writer.Write(data)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
 	}
 	return nil
 }
@@ -261,8 +290,11 @@ func setDeadline(ctx context.Context, setter func(time.Time) error) func() {
 }
 
 func validatePolicy(change PolicyChange) error {
-	if change.Operation != "add" && change.Operation != "remove" {
-		return errors.New("policy operation must be add or remove")
+	if change.ID == "" || change.IdempotencyKey == "" {
+		return errors.New("policy ID and idempotency key are required")
+	}
+	if change.Operation != "add" && change.Operation != "remove" && change.Operation != "replace" && change.Operation != "delete" {
+		return errors.New("policy operation must be add, remove, replace, or delete")
 	}
 	if change.List != "blocklist" && change.List != "whitelist" {
 		return errors.New("policy list must be blocklist or whitelist")

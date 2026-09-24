@@ -65,7 +65,12 @@ func (p *sessionPolicy) admitPeer(address string, asn uint32) bool {
 	if current, ok := p.peers[address]; ok {
 		return current == asn
 	}
-	if _, ok := p.allowed[asn]; !ok || len(p.peers) >= p.max {
+	if len(p.allowed) > 0 {
+		if _, ok := p.allowed[asn]; !ok {
+			return false
+		}
+	}
+	if len(p.peers) >= p.max {
 		return false
 	}
 	p.peers[address] = asn

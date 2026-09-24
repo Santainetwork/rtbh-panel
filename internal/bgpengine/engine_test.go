@@ -82,6 +82,15 @@ func TestSessionPolicyAllowsOnlyConfiguredASNAndCapacity(t *testing.T) {
 	}
 }
 
+func TestSessionPolicyAllowsAnyASNWhenAllowlistIsUnset(t *testing.T) {
+	config := validConfig()
+	config.AllowedASNs = nil
+	policy := newSessionPolicy(config)
+	if !policy.admitPeer("198.51.100.1", 64496) {
+		t.Fatal("optional ASN allowlist rejected an otherwise allowed peer")
+	}
+}
+
 func TestRoutePath(t *testing.T) {
 	tests := []struct {
 		name   string
