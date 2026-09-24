@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func mustPrefix(s string) netip.Prefix { return netip.MustParsePrefix(s) }
@@ -152,5 +153,81 @@ func TestOpenRejectsUnsafePersistedData(t *testing.T) {
 	}
 	if _, err := Open(path); err == nil {
 		t.Fatal("Open accepted an invalid persisted prefix")
+	}
+}
+
+func TestBlocklistExpiryPersistsAndRemovalClearsIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := mustPrefix("203.0.113.0/24")
+	expiry := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	changed, err := store.AddUntil(Blocklist, prefix, expiry)
+	if err != nil || !changed {
+		t.Fatalf("AddUntil changed=%v err=%v", changed, err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reopened.Expiry(prefix)
+	if !ok || !got.Equal(expiry) {
+		t.Fatalf("Expiry = %v, %v", got, ok)
+	}
+	if _, err := reopened.Remove(Blocklist, prefix); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reopened.Expiry(prefix); ok {
+		t.Fatal("expiry survived removal")
+	}
+}
+
+func TestLegacyPolicyFileHasNoExpirations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(path, []byte(`{"blocklist":["192.0.2.0/24"],"whitelist":null}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(store.Expirations()); got != 0 {
+		t.Fatalf("legacy file gained %d expirations", got)
+	}
+}
+
+func TestAddUntilRejectsInvalidTargets(t *testing.T) {
+	store := New()
+	if changed, err := store.AddUntil(Whitelist, mustPrefix("203.0.113.0/24"), time.Now().Add(time.Hour)); err == nil || changed {
+		t.Fatalf("whitelist expiry: changed=%v err=%v", changed, err)
+	}
+	if changed, err := store.AddUntil(Blocklist, mustPrefix("203.0.113.0/24"), time.Time{}); err == nil || changed {
+		t.Fatalf("zero expiry: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestOpenRejectsOrphanedExpiration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	data := `{"blocklist":null,"whitelist":null,"expirations":{"192.0.2.0/24":"2030-01-01T00:00:00Z"}}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err == nil {
+		t.Fatal("Open accepted an expiration without a blocklist entry")
+	}
+}
+
+func TestExpirationsReturnsCopy(t *testing.T) {
+	store := New()
+	expiry := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	if _, err := store.AddUntil(Blocklist, mustPrefix("192.0.2.0/24"), expiry); err != nil {
+		t.Fatal(err)
+	}
+	expirations := store.Expirations()
+	expirations[mustPrefix("198.51.100.0/24")] = time.Now()
+	if len(store.Expirations()) != 1 {
+		t.Fatal("Expirations returned internal storage")
 	}
 }

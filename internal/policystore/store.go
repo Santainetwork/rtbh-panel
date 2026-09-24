@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -41,17 +42,21 @@ type AuditEvent struct {
 
 // Store is safe for concurrent use.
 type Store struct {
-	mu        sync.RWMutex
-	path      string
-	blocklist []netip.Prefix
-	whitelist []netip.Prefix
-	audit     []AuditEvent
+	mu          sync.RWMutex
+	path        string
+	blocklist   []netip.Prefix
+	whitelist   []netip.Prefix
+	expirations map[netip.Prefix]time.Time
+	audit       []AuditEvent
 }
 
 type diskState struct {
-	Blocklist []netip.Prefix `json:"blocklist"`
-	Whitelist []netip.Prefix `json:"whitelist"`
-	Audit     []AuditEvent   `json:"audit,omitempty"`
+	Blocklist   []netip.Prefix       `json:"blocklist"`
+	Whitelist   []netip.Prefix       `json:"whitelist"`
+	Audit       []AuditEvent         `json:"audit,omitempty"`
+	Expirations map[string]time.Time `json:"expirations,omitempty"`
+
+	expirationsByPrefix map[netip.Prefix]time.Time
 }
 
 // New returns an in-memory policy store.
@@ -88,6 +93,7 @@ func Open(path string) (*Store, error) {
 
 	s.blocklist = state.Blocklist
 	s.whitelist = state.Whitelist
+	s.expirations = state.expirationsByPrefix
 	s.audit = state.Audit
 	return s, nil
 }
@@ -104,6 +110,61 @@ func (s *Store) Remove(list List, prefix netip.Prefix) (bool, error) {
 	return s.mutate(Remove, list, prefix)
 }
 
+// AddUntil inserts a blocklist CIDR and records when the block expires.
+// Setting an expiry on an existing prefix counts as a change and is audited.
+func (s *Store) AddUntil(list List, prefix netip.Prefix, expiry time.Time) (bool, error) {
+	if list != Blocklist {
+		return false, fmt.Errorf("policystore: expiry requires blocklist, got %q", list)
+	}
+	if !prefix.IsValid() {
+		return false, errors.New("policystore: invalid prefix")
+	}
+	if expiry.IsZero() {
+		return false, errors.New("policystore: zero expiry")
+	}
+	prefix = prefix.Masked()
+	expiry = expiry.UTC()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	blocklist := slices.Clone(s.blocklist)
+	whitelist := slices.Clone(s.whitelist)
+	expirations := maps.Clone(s.expirations)
+	if expirations == nil {
+		expirations = make(map[netip.Prefix]time.Time)
+	}
+
+	index := slices.Index(blocklist, prefix)
+	if index < 0 {
+		blocklist = append(blocklist, prefix)
+		expirations[prefix] = expiry
+	} else if existing, ok := expirations[prefix]; ok && existing.Equal(expiry) {
+		return false, nil
+	} else {
+		expirations[prefix] = expiry
+	}
+
+	audit := append(slices.Clone(s.audit), AuditEvent{
+		Time:      time.Now().UTC(),
+		Operation: Add,
+		List:      list,
+		Prefix:    prefix,
+	})
+	if s.path != "" {
+		state := diskState{Blocklist: blocklist, Whitelist: whitelist, Audit: audit, Expirations: prefixToTimeMap(expirations)}
+		if err := persist(s.path, state); err != nil {
+			return false, err
+		}
+	}
+
+	s.blocklist = blocklist
+	s.whitelist = whitelist
+	s.expirations = expirations
+	s.audit = audit
+	return true, nil
+}
+
 func (s *Store) mutate(operation Operation, list List, prefix netip.Prefix) (bool, error) {
 	if !validList(list) {
 		return false, fmt.Errorf("policystore: invalid list %q", list)
@@ -118,6 +179,7 @@ func (s *Store) mutate(operation Operation, list List, prefix netip.Prefix) (boo
 
 	blocklist := slices.Clone(s.blocklist)
 	whitelist := slices.Clone(s.whitelist)
+	expirations := maps.Clone(s.expirations)
 	var target *[]netip.Prefix
 	if list == Blocklist {
 		target = &blocklist
@@ -137,6 +199,9 @@ func (s *Store) mutate(operation Operation, list List, prefix netip.Prefix) (boo
 			return false, nil
 		}
 		*target = slices.Delete(*target, index, index+1)
+		if list == Blocklist {
+			delete(expirations, prefix)
+		}
 	default:
 		return false, fmt.Errorf("policystore: invalid operation %q", operation)
 	}
@@ -148,7 +213,7 @@ func (s *Store) mutate(operation Operation, list List, prefix netip.Prefix) (boo
 		Prefix:    prefix,
 	})
 	if s.path != "" {
-		state := diskState{Blocklist: blocklist, Whitelist: whitelist, Audit: audit}
+		state := diskState{Blocklist: blocklist, Whitelist: whitelist, Audit: audit, Expirations: prefixToTimeMap(expirations)}
 		if err := persist(s.path, state); err != nil {
 			return false, err
 		}
@@ -156,6 +221,7 @@ func (s *Store) mutate(operation Operation, list List, prefix netip.Prefix) (boo
 
 	s.blocklist = blocklist
 	s.whitelist = whitelist
+	s.expirations = expirations
 	s.audit = audit
 	return true, nil
 }
@@ -197,6 +263,21 @@ func (s *Store) Prefixes(list List) ([]netip.Prefix, error) {
 	return slices.Clone(s.whitelist), nil
 }
 
+// Expiry reports when a blocklist prefix expires.
+func (s *Store) Expiry(prefix netip.Prefix) (time.Time, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	expiry, ok := s.expirations[prefix.Masked()]
+	return expiry, ok
+}
+
+// Expirations returns a copy of the expiry map.
+func (s *Store) Expirations() map[netip.Prefix]time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return maps.Clone(s.expirations)
+}
+
 // Audit returns a copy of the audit log.
 func (s *Store) Audit() []AuditEvent {
 	s.mu.RLock()
@@ -213,6 +294,10 @@ func validateState(state *diskState) error {
 		return err
 	}
 	state.Whitelist, err = validatePrefixes(Whitelist, state.Whitelist)
+	if err != nil {
+		return err
+	}
+	state.expirationsByPrefix, err = validateExpirations(state.Blocklist, state.Expirations)
 	if err != nil {
 		return err
 	}
@@ -239,6 +324,42 @@ func validatePrefixes(list List, prefixes []netip.Prefix) ([]netip.Prefix, error
 		validated = append(validated, prefix)
 	}
 	return validated, nil
+}
+
+func validateExpirations(blocklist []netip.Prefix, expirations map[string]time.Time) (map[netip.Prefix]time.Time, error) {
+	if len(expirations) == 0 {
+		return nil, nil
+	}
+	validated := make(map[netip.Prefix]time.Time, len(expirations))
+	for key, expiry := range expirations {
+		prefix, err := netip.ParsePrefix(key)
+		if err != nil {
+			return nil, fmt.Errorf("policystore: invalid expiration key %q", key)
+		}
+		prefix = prefix.Masked()
+		if expiry.IsZero() {
+			return nil, fmt.Errorf("policystore: zero expiry for %q", key)
+		}
+		if _, dup := validated[prefix]; dup {
+			return nil, fmt.Errorf("policystore: duplicate expiration key %q", prefix)
+		}
+		if !slices.Contains(blocklist, prefix) {
+			return nil, fmt.Errorf("policystore: orphan expiration %q", prefix)
+		}
+		validated[prefix] = expiry.UTC()
+	}
+	return validated, nil
+}
+
+func prefixToTimeMap(expirations map[netip.Prefix]time.Time) map[string]time.Time {
+	if len(expirations) == 0 {
+		return nil
+	}
+	out := make(map[string]time.Time, len(expirations))
+	for prefix, expiry := range expirations {
+		out[prefix.String()] = expiry
+	}
+	return out
 }
 
 func ensureJSONEnd(dec *json.Decoder) error {
