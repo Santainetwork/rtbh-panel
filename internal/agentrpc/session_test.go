@@ -69,6 +69,22 @@ func TestPolicyIsAcknowledgedAndAdvancesResumeCursor(t *testing.T) {
 	}
 }
 
+func TestValidatePolicyExpiry(t *testing.T) {
+	future := time.Now().UTC().Add(time.Hour)
+	valid := PolicyChange{ID: "p", IdempotencyKey: "i", Operation: "add", List: "blocklist", Prefix: "192.0.2.0/24", ExpiresAt: &future}
+	if err := validatePolicy(valid); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutation := range []PolicyChange{
+		{ID: "p", IdempotencyKey: "i", Operation: "add", List: "whitelist", Prefix: "192.0.2.0/24", ExpiresAt: &future},
+		{ID: "p", IdempotencyKey: "i", Operation: "remove", List: "blocklist", Prefix: "192.0.2.0/24", ExpiresAt: &future},
+	} {
+		if err := validatePolicy(mutation); err == nil {
+			t.Fatalf("validatePolicy(%#v) accepted invalid expiry", mutation)
+		}
+	}
+}
+
 func TestDuplicatePolicyIsAcknowledgedButNotDeliveredAgain(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()

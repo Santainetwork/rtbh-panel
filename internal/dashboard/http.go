@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"time"
 )
 
 const maxBodyBytes = 1 << 20
@@ -32,9 +33,10 @@ type Peer struct {
 }
 
 type PolicyMutation struct {
-	Action string `json:"action"`
-	List   string `json:"list"`
-	Prefix string `json:"prefix"`
+	Action    string     `json:"action"`
+	List      string     `json:"list"`
+	Prefix    string     `json:"prefix"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 type Backend interface {
@@ -131,9 +133,10 @@ func (h *handler) putConfig(w http.ResponseWriter, r *http.Request) {
 func (h *handler) mutate(list string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			Action string `json:"action"`
-			Prefix string `json:"prefix"`
-			Apply  bool   `json:"apply"`
+			Action    string     `json:"action"`
+			Prefix    string     `json:"prefix"`
+			Apply     bool       `json:"apply"`
+			ExpiresAt *time.Time `json:"expires_at,omitempty"`
 		}
 		if err := decodeJSON(w, r, &request); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -144,7 +147,11 @@ func (h *handler) mutate(list string) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "action and canonical CIDR are required")
 			return
 		}
-		mutation := PolicyMutation{Action: request.Action, List: list, Prefix: request.Prefix}
+		if request.ExpiresAt != nil && (list != "blocklist" || request.Action != "add" || !request.ExpiresAt.After(time.Now())) {
+			writeError(w, http.StatusBadRequest, "expires_at requires a future blocklist add")
+			return
+		}
+		mutation := PolicyMutation{Action: request.Action, List: list, Prefix: request.Prefix, ExpiresAt: request.ExpiresAt}
 		if request.Apply {
 			if err := h.backend.MutatePolicy(r.Context(), mutation); err != nil {
 				writeError(w, http.StatusInternalServerError, "policy not applied")

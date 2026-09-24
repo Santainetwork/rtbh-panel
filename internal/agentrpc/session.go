@@ -40,11 +40,12 @@ type Resume struct {
 }
 
 type PolicyChange struct {
-	ID             string `json:"id"`
-	IdempotencyKey string `json:"idempotency_key"`
-	Operation      string `json:"operation"`
-	List           string `json:"list"`
-	Prefix         string `json:"prefix"`
+	ID             string     `json:"id"`
+	IdempotencyKey string     `json:"idempotency_key"`
+	Operation      string     `json:"operation"`
+	List           string     `json:"list"`
+	Prefix         string     `json:"prefix"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 }
 
 type Message struct {
@@ -298,6 +299,9 @@ func validatePolicy(change PolicyChange) error {
 	}
 	if change.List != "blocklist" && change.List != "whitelist" {
 		return errors.New("policy list must be blocklist or whitelist")
+	}
+	if change.ExpiresAt != nil && (change.Operation != "add" || change.List != "blocklist") {
+		return errors.New("policy expiry is only valid on blocklist add")
 	}
 	prefix, err := netip.ParsePrefix(change.Prefix)
 	if err != nil || prefix != prefix.Masked() {

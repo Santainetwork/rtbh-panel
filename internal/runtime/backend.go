@@ -34,6 +34,14 @@ func (a *policyStoreAdapter) Apply(_ context.Context, change agentrpc.PolicyChan
 	if a.dryRun {
 		return nil
 	}
+	if change.ExpiresAt != nil {
+		prefix, err := netip.ParsePrefix(change.Prefix)
+		if err != nil || prefix != prefix.Masked() {
+			return errors.New("runtime: canonical policy prefix required")
+		}
+		_, err = a.store.AddUntil(policystore.Blocklist, prefix, *change.ExpiresAt)
+		return err
+	}
 	return mutateStore(a.store, change.Operation, change.List, change.Prefix)
 }
 

@@ -134,3 +134,23 @@ func TestPolicyControllerDoesNotPersistWhenBGPFails(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestPolicyControllerExpiresDenyAndWithdraws(t *testing.T) {
+	store, err := policystore.Open(filepath.Join(t.TempDir(), "policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &recordingRouteEngine{}
+	controller := newPolicyController(store, engine, false, netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("::1"), nil)
+	expiresAt := time.Now().Add(time.Minute)
+	mutation := dashboard.PolicyMutation{Action: "add", List: "blocklist", Prefix: "203.0.113.0/24", ExpiresAt: &expiresAt}
+	if err := controller.Apply(context.Background(), mutation); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.applyExpired(expiresAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(engine.withdrawn) != 1 || store.Blocked(netip.MustParseAddr("203.0.113.1")) {
+		t.Fatalf("withdrawn=%v expirations=%v", engine.withdrawn, store.Expirations())
+	}
+}

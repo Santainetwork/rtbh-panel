@@ -29,6 +29,7 @@ func (q *policyQueue) publish(mutation dashboard.PolicyMutation) {
 		Operation:      mutation.Action,
 		List:           mutation.List,
 		Prefix:         mutation.Prefix,
+		ExpiresAt:      mutation.ExpiresAt,
 	})
 	q.mu.Unlock()
 	select {

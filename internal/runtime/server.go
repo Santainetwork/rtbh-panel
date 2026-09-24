@@ -136,10 +136,13 @@ func (s *Server) Run(ctx context.Context) error {
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 	var workers sync.WaitGroup
 	go func() { errCh <- normalizeServerError(httpServer.Serve(httpListener)) }()
 	go func() { errCh <- s.acceptSync(runCtx, syncListener, &workers) }()
+	if !s.config.DryRun {
+		go func() { errCh <- s.controller.RunExpiry(runCtx) }()
+	}
 	s.once.Do(func() { close(s.started) })
 
 	var runErr error

@@ -51,13 +51,20 @@ func (c *policyController) Apply(_ context.Context, mutation dashboard.PolicyMut
 	if err != nil || prefix != prefix.Masked() {
 		return errors.New("runtime: canonical policy prefix required")
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.applyLocked(mutation)
+}
+
+func (c *policyController) applyLocked(mutation dashboard.PolicyMutation) error {
+	prefix, err := netip.ParsePrefix(mutation.Prefix)
+	if err != nil || prefix != prefix.Masked() {
+		return errors.New("runtime: canonical policy prefix required")
+	}
 	list, err := policyList(mutation.List)
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	before, err := c.routes(time.Now())
 	if err != nil {
 		return err
@@ -93,9 +100,15 @@ func (c *policyController) Apply(_ context.Context, mutation dashboard.PolicyMut
 	if err := c.applyDelta(proposed); err != nil {
 		return err
 	}
-	if err := mutateStore(c.store, mutation.Action, mutation.List, mutation.Prefix); err != nil {
+	var persistErr error
+	if mutation.ExpiresAt != nil {
+		_, persistErr = c.store.AddUntil(policystore.Blocklist, prefix, *mutation.ExpiresAt)
+	} else {
+		persistErr = mutateStore(c.store, mutation.Action, mutation.List, mutation.Prefix)
+	}
+	if persistErr != nil {
 		_ = c.applyDelta(before)
-		return err
+		return persistErr
 	}
 	if c.publish != nil {
 		c.publish(mutation)
@@ -103,6 +116,48 @@ func (c *policyController) Apply(_ context.Context, mutation dashboard.PolicyMut
 	select {
 	case c.wake <- struct{}{}:
 	default:
+	}
+	return nil
+}
+
+func (c *policyController) RunExpiry(ctx context.Context) error {
+	for {
+		wait := time.Hour
+		for _, expiry := range c.store.Expirations() {
+			if remaining := time.Until(expiry); remaining < wait {
+				wait = remaining
+			}
+		}
+		if wait < 0 {
+			wait = 0
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-c.wake:
+			timer.Stop()
+		case <-timer.C:
+		}
+		if err := c.applyExpired(time.Now()); err != nil {
+			if !sleepContext(ctx, time.Second) {
+				return nil
+			}
+		}
+	}
+}
+
+func (c *policyController) applyExpired(now time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for prefix, expiry := range c.store.Expirations() {
+		if expiry.After(now) {
+			continue
+		}
+		if err := c.applyLocked(dashboard.PolicyMutation{Action: "remove", List: "blocklist", Prefix: prefix.String()}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeBackend struct {
@@ -14,6 +15,24 @@ type fakeBackend struct {
 	peers     []Peer
 	updates   int
 	mutations []PolicyMutation
+}
+
+func TestBlocklistMutationAcceptsFutureExpiryOnly(t *testing.T) {
+	backend := &fakeBackend{}
+	handler := NewHandler(backend, authorized)
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	response := httptest.NewRecorder()
+	body := `{"action":"add","prefix":"203.0.113.0/24","apply":true,"expires_at":"` + future + `"}`
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/block", strings.NewReader(body)))
+	if response.Code != http.StatusOK || len(backend.mutations) != 1 || backend.mutations[0].ExpiresAt == nil {
+		t.Fatalf("status=%d mutations=%#v body=%s", response.Code, backend.mutations, response.Body.String())
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/whitelist", strings.NewReader(body)))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("whitelist expiry status=%d", response.Code)
+	}
 }
 
 func (f *fakeBackend) Config(context.Context) (Config, error) { return f.config, nil }
