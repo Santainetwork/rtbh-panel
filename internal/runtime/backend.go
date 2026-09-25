@@ -8,6 +8,7 @@ import (
 
 	"github.com/arcelo/rtbh-panel/internal/agentrpc"
 	"github.com/arcelo/rtbh-panel/internal/dashboard"
+	"github.com/arcelo/rtbh-panel/internal/feed"
 	"github.com/arcelo/rtbh-panel/internal/policystore"
 )
 
@@ -58,6 +59,18 @@ func (b *dashboardBackend) Config(context.Context) (dashboard.Config, error) {
 	for _, prefix := range b.config.ListenRanges {
 		ranges = append(ranges, prefix.String())
 	}
+	var blocklistStrings []string
+	if bl, err := b.store.Prefixes(policystore.Blocklist); err == nil {
+		for _, p := range bl {
+			blocklistStrings = append(blocklistStrings, p.String())
+		}
+	}
+	var whitelistStrings []string
+	if wl, err := b.store.Prefixes(policystore.Whitelist); err == nil {
+		for _, p := range wl {
+			whitelistStrings = append(whitelistStrings, p.String())
+		}
+	}
 	return dashboard.Config{
 		LocalASN:      b.config.LocalASN,
 		RouterID:      b.config.RouterID.String(),
@@ -67,6 +80,8 @@ func (b *dashboardBackend) Config(context.Context) (dashboard.Config, error) {
 		MaxSessions:   b.config.MaxSessions,
 		DefaultPolicy: "reject",
 		DryRun:        b.config.DryRun,
+		Blocklist:     blocklistStrings,
+		Whitelist:     whitelistStrings,
 	}, nil
 }
 
@@ -134,4 +149,37 @@ func mutateStore(store *policystore.Store, operation, listName, prefixRaw string
 		return fmt.Errorf("runtime: mutate policy store: %w", err)
 	}
 	return nil
+}
+
+func (b *dashboardBackend) ImportFeed(ctx context.Context, req dashboard.FeedImportRequest) (dashboard.FeedImportResult, error) {
+	expand := req.ExpandSubnets || (req.List == "whitelist" && b.config.WhitelistExpandSlash24)
+	prefixes, err := feed.Fetch(ctx, req.Source, expand)
+	if err != nil {
+		return dashboard.FeedImportResult{}, fmt.Errorf("runtime: fetch feed: %w", err)
+	}
+
+	result := dashboard.FeedImportResult{
+		Applied: req.Apply && !b.config.DryRun,
+		DryRun:  !req.Apply || b.config.DryRun,
+		Count:   len(prefixes),
+	}
+	for _, p := range prefixes {
+		result.Prefixes = append(result.Prefixes, p.String())
+	}
+
+	if !req.Apply || b.config.DryRun {
+		return result, nil
+	}
+
+	for _, p := range prefixes {
+		mutation := dashboard.PolicyMutation{
+			Action: "add",
+			List:   req.List,
+			Prefix: p.String(),
+		}
+		if err := b.MutatePolicy(ctx, mutation); err != nil {
+			return result, fmt.Errorf("runtime: apply prefix %s: %w", p, err)
+		}
+	}
+	return result, nil
 }

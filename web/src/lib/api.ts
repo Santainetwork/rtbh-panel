@@ -53,9 +53,24 @@ export interface MutationResult {
   mutation: Omit<Mutation, "apply">
 }
 
+export interface FeedImportRequest {
+  list: PolicyList
+  source: string
+  expandSubnets?: boolean
+  apply?: boolean
+}
+
+export interface FeedImportResult {
+  applied: boolean
+  dryRun: boolean
+  count: number
+  prefixes?: string[]
+}
+
 export interface DashboardApi {
   snapshot(): Promise<DashboardSnapshot>
   mutate(mutation: Mutation): Promise<MutationResult>
+  importFeed?(req: FeedImportRequest): Promise<FeedImportResult>
 }
 
 const initialSnapshot: DashboardSnapshot = {
@@ -112,6 +127,20 @@ export function createMockApi(): DashboardApi {
       }
       return { applied: request.apply === true, dryRun: request.apply !== true, mutation }
     },
+    async importFeed(req) {
+      if (req.apply) {
+        state.audit.unshift({
+          id: `evt-${Date.now()}`,
+          timestamp: "just now",
+          actor: "local operator",
+          action: `import ${req.list}`,
+          target: req.source,
+          mode: "APPLIED",
+          result: "allowed",
+        })
+      }
+      return { applied: req.apply === true, dryRun: req.apply !== true, count: 1 }
+    },
   }
 }
 
@@ -128,14 +157,16 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
   return {
     async snapshot() {
       const [config, peers] = await Promise.all([
-        request<{ local_asn: number; router_id: string; listen_ranges: string[]; peer_group: string; allowed_asns?: number[]; max_sessions: number; default_policy: "reject"; dry_run?: boolean }>("/api/v1/config"),
+        request<{ local_asn: number; router_id: string; listen_ranges: string[]; peer_group: string; allowed_asns?: number[]; max_sessions: number; default_policy: "reject"; dry_run?: boolean; blocklist?: string[]; whitelist?: string[] }>("/api/v1/config"),
         request<Array<{ address: string; asn: number; state: PeerState }>>("/api/v1/peers"),
       ])
       return {
         source: "http",
         config: { localAsn: config.local_asn, routerId: config.router_id, listenRanges: config.listen_ranges, peerGroup: config.peer_group, allowedAsns: config.allowed_asns ?? [], maxSessions: config.max_sessions, defaultPolicy: config.default_policy, dryRun: config.dry_run !== false },
         peers: peers.map((peer) => ({ ...peer, uptime: "—", received: 0 })),
-        blocklist: [], whitelist: [], audit: [],
+        blocklist: config.blocklist ?? [],
+        whitelist: config.whitelist ?? [],
+        audit: [],
       }
     },
     mutate(mutation) {
@@ -143,6 +174,17 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
       return request<MutationResult>(path, {
         method: "POST",
         body: JSON.stringify({ action: mutation.action, prefix: mutation.prefix, apply: mutation.apply === true }),
+      })
+    },
+    importFeed(req) {
+      return request<FeedImportResult>("/api/v1/feed", {
+        method: "POST",
+        body: JSON.stringify({
+          list: req.list,
+          source: req.source,
+          expand_subnets: req.expandSubnets ?? true,
+          apply: req.apply === true,
+        }),
       })
     },
   }

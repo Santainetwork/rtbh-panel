@@ -8,6 +8,7 @@ import {
   ChevronRight,
   CircleDot,
   Clock3,
+  Download,
   FileClock,
   Fingerprint,
   Gauge,
@@ -85,7 +86,12 @@ function MetricCard({ label, value, detail, icon: Icon, tone = "normal" }: { lab
   )
 }
 
-function PolicyTable({ entries, list, onMutate }: { entries: string[]; list: PolicyList; onMutate: (list: PolicyList, action: PolicyAction, prefix?: string) => void }) {
+function PolicyTable({ entries, list, onMutate, onImportFeed }: {
+  entries: string[]
+  list: PolicyList
+  onMutate: (list: PolicyList, action: PolicyAction, prefix?: string) => void
+  onImportFeed: (list: PolicyList) => void
+}) {
   const isBlock = list === "blocklist"
   return (
     <div className="policy-table-wrap">
@@ -94,7 +100,10 @@ function PolicyTable({ entries, list, onMutate }: { entries: string[]; list: Pol
           <p className="section-kicker">{entries.length} active prefixes</p>
           <p className="section-note">{isBlock ? "Advertised with RTBH community after approval." : "Whitelist wins over every block decision."}</p>
         </div>
-        <Button onClick={() => onMutate(list, "add")} size="sm"><Plus /> Add prefix</Button>
+        <div className="flex gap-2">
+          <Button onClick={() => onImportFeed(list)} variant="outline" size="sm"><Download /> Import Feed</Button>
+          <Button onClick={() => onMutate(list, "add")} size="sm"><Plus /> Add prefix</Button>
+        </div>
       </div>
       <Table>
         <TableHeader><TableRow><TableHead>Prefix</TableHead><TableHead>Family</TableHead><TableHead>Decision</TableHead><TableHead className="text-right">Control</TableHead></TableRow></TableHeader>
@@ -171,11 +180,94 @@ function MutationDialog({ open, initial, onOpenChange, onComplete, api, dryRun }
   )
 }
 
+function ImportFeedDialog({ open, initialList, onOpenChange, onComplete, api, dryRun }: {
+  open: boolean
+  initialList: PolicyList
+  onOpenChange: (open: boolean) => void
+  onComplete: () => Promise<void>
+  api: DashboardApi
+  dryRun: boolean
+}) {
+  const [list, setList] = useState<PolicyList>(initialList)
+  const [source, setSource] = useState("")
+  const [expandSubnets, setExpandSubnets] = useState(true)
+  const [previewed, setPreviewed] = useState(false)
+  const [foundCount, setFoundCount] = useState<number | null>(null)
+  const [confirmed, setConfirmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const preview = async () => {
+    if (!source.trim() || !api.importFeed) return
+    setBusy(true)
+    try {
+      const res = await api.importFeed({ list, source: source.trim(), expandSubnets, apply: false })
+      setFoundCount(res.count)
+      setPreviewed(true)
+      toast.info("Feed parsed successfully", { description: `Found ${res.count} valid prefixes.` })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to fetch feed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const apply = async () => {
+    if (!source.trim() || !previewed || !confirmed || !api.importFeed) return
+    setBusy(true)
+    try {
+      const res = await api.importFeed({ list, source: source.trim(), expandSubnets, apply: true })
+      await onComplete()
+      onOpenChange(false)
+      toast.success("Feed imported", { description: `${res.count} prefixes applied to ${list}.` })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Feed import failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <div className="dialog-symbol"><Download /></div>
+          <DialogTitle>Import External Feed / URL</DialogTitle>
+          <DialogDescription>Download list of IPs/CIDRs from an external URL (e.g. Feodo Tracker, Pastebin) or local file.</DialogDescription>
+        </DialogHeader>
+        <div className="dialog-grid">
+          <div className="field-stack"><Label htmlFor="feed-list">Target list</Label><Select value={list} onValueChange={(value) => { setList(value as PolicyList); setPreviewed(false) }}><SelectTrigger id="feed-list" className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="blocklist">Blocklist</SelectItem><SelectItem value="whitelist">Whitelist</SelectItem></SelectContent></Select></div>
+          <div className="field-stack field-wide"><Label htmlFor="feed-url">Feed URL or File Path</Label><Input id="feed-url" placeholder="https://feodotracker.abuse.ch/downloads/ipblocklist.txt" value={source} onChange={(e) => { setSource(e.target.value); setPreviewed(false); setConfirmed(false) }} /><p className="field-help">Accepts HTTP/HTTPS URL or local path. Ignores # comments and empty lines.</p></div>
+          {list === "whitelist" && (
+            <label className="confirm-row col-span-2"><Checkbox checked={expandSubnets} onCheckedChange={(v) => { setExpandSubnets(v === true); setPreviewed(false) }} /><span>Expand subnets (/16 to /31) into individual /32 host entries</span></label>
+          )}
+        </div>
+        {previewed && foundCount !== null && (
+          <Alert className="safety-alert"><ShieldCheck /><AlertTitle>Feed parsed: {foundCount} prefixes</AlertTitle><AlertDescription>Ready to import into {list}.</AlertDescription></Alert>
+        )}
+        {previewed && (
+          <label className="confirm-row"><Checkbox checked={confirmed} onCheckedChange={(v) => setConfirmed(v === true)} /><span>I reviewed this feed source and authorize import into {list}.</span></label>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          {!previewed ? (
+            <Button disabled={!source.trim() || busy} onClick={preview}>Preview feed</Button>
+          ) : (
+            <Button variant="destructive" disabled={dryRun || !confirmed || busy} onClick={apply}>Apply feed</Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; refresh: () => Promise<void>; api: DashboardApi }) {
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [importDialogOpen, setImportDialogOpen] = useState(false)
+  const [importList, setImportList] = useState<PolicyList>("blocklist")
   const [mutation, setMutation] = useState<Omit<Mutation, "apply">>({ list: "blocklist", action: "add", prefix: "" })
   const established = snapshot.peers.filter((peer) => peer.state === "ESTABLISHED").length
   const openMutation = (list: PolicyList, action: PolicyAction, prefix = "") => { setMutation({ list, action, prefix }); setDialogOpen(true) }
+  const openImportFeed = (list: PolicyList) => { setImportList(list); setImportDialogOpen(true) }
 
   return (
     <>
@@ -222,11 +314,12 @@ function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; re
               <Card><CardHeader><CardTitle>Allowed remote ASN</CardTitle><CardDescription>Optional OPEN-stage admission policy.</CardDescription></CardHeader><CardContent className="asn-grid">{snapshot.config.allowedAsns.map((asn) => <Badge variant="outline" key={asn}>AS{asn}</Badge>)}</CardContent></Card>
             </div>
           </section>
-          <section id="policies"><div className="section-heading"><div><p className="eyebrow">ROUTE DECISIONS</p><h2>Policy inventory</h2></div><Badge variant="outline"><LockKeyhole /> whitelist precedence</Badge></div><Card><CardContent className="pt-0"><Tabs defaultValue="blocklist"><TabsList variant="line"><TabsTrigger value="blocklist"><ShieldX /> Blocklist <Badge variant="secondary">{snapshot.blocklist.length}</Badge></TabsTrigger><TabsTrigger value="whitelist"><ShieldCheck /> Whitelist <Badge variant="secondary">{snapshot.whitelist.length}</Badge></TabsTrigger></TabsList><TabsContent value="blocklist"><PolicyTable entries={snapshot.blocklist} list="blocklist" onMutate={openMutation} /></TabsContent><TabsContent value="whitelist"><PolicyTable entries={snapshot.whitelist} list="whitelist" onMutate={openMutation} /></TabsContent></Tabs></CardContent></Card></section>
+          <section id="policies"><div className="section-heading"><div><p className="eyebrow">ROUTE DECISIONS</p><h2>Policy inventory</h2></div><Badge variant="outline"><LockKeyhole /> whitelist precedence</Badge></div><Card><CardContent className="pt-0"><Tabs defaultValue="blocklist"><TabsList variant="line"><TabsTrigger value="blocklist"><ShieldX /> Blocklist <Badge variant="secondary">{snapshot.blocklist.length}</Badge></TabsTrigger><TabsTrigger value="whitelist"><ShieldCheck /> Whitelist <Badge variant="secondary">{snapshot.whitelist.length}</Badge></TabsTrigger></TabsList><TabsContent value="blocklist"><PolicyTable entries={snapshot.blocklist} list="blocklist" onMutate={openMutation} onImportFeed={openImportFeed} /></TabsContent><TabsContent value="whitelist"><PolicyTable entries={snapshot.whitelist} list="whitelist" onMutate={openMutation} onImportFeed={openImportFeed} /></TabsContent></Tabs></CardContent></Card></section>
           <section id="activity"><div className="section-heading"><div><p className="eyebrow">IMMUTABLE TRAIL</p><h2>Recent activity</h2></div><Badge variant="secondary"><Clock3 /> newest first</Badge></div><Card><CardContent><div className="activity-list">{snapshot.audit.map((event) => <div className="activity-row" key={event.id}><div className={`activity-icon ${event.result}`} >{event.result === "allowed" ? <CheckCircle2 /> : <ShieldX />}</div><div className="activity-main"><strong>{event.action}</strong><code>{event.target}</code><span>by {event.actor}</span></div><div className="activity-meta"><Badge variant={event.mode === "DRY RUN" ? "outline" : "secondary"}>{event.mode}</Badge><time>{event.timestamp}</time></div></div>)}</div></CardContent></Card></section>
         </main>
       </SidebarInset>
       {dialogOpen && <MutationDialog open initial={mutation} onOpenChange={setDialogOpen} onComplete={refresh} api={api} dryRun={snapshot.config.dryRun} />}
+      {importDialogOpen && <ImportFeedDialog open initialList={importList} onOpenChange={setImportDialogOpen} onComplete={refresh} api={api} dryRun={snapshot.config.dryRun} />}
     </>
   )
 }

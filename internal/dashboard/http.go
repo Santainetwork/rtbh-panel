@@ -25,6 +25,8 @@ type Config struct {
 	MaxSessions   int      `json:"max_sessions"`
 	DefaultPolicy string   `json:"default_policy"`
 	DryRun        bool     `json:"dry_run"`
+	Blocklist     []string `json:"blocklist,omitempty"`
+	Whitelist     []string `json:"whitelist,omitempty"`
 }
 
 type Peer struct {
@@ -38,6 +40,24 @@ type PolicyMutation struct {
 	List      string     `json:"list"`
 	Prefix    string     `json:"prefix"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+type FeedImportRequest struct {
+	List          string `json:"list"`
+	Source        string `json:"source"`
+	ExpandSubnets bool   `json:"expand_subnets"`
+	Apply         bool   `json:"apply"`
+}
+
+type FeedImportResult struct {
+	Applied  bool     `json:"applied"`
+	DryRun   bool     `json:"dry_run"`
+	Count    int      `json:"count"`
+	Prefixes []string `json:"prefixes,omitempty"`
+}
+
+type FeedImporter interface {
+	ImportFeed(context.Context, FeedImportRequest) (FeedImportResult, error)
 }
 
 type Backend interface {
@@ -67,6 +87,7 @@ func NewHandler(backend Backend, authorize Authorizer, static ...fs.FS) http.Han
 		h.mux.HandleFunc("GET "+prefix+"/peers", h.getPeers)
 		h.mux.HandleFunc("POST "+prefix+"/block", h.mutate("blocklist"))
 		h.mux.HandleFunc("POST "+prefix+"/whitelist", h.mutate("whitelist"))
+		h.mux.HandleFunc("POST "+prefix+"/feed", h.importFeed)
 	}
 	h.mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusNotFound, "not found") })
 	h.mux.HandleFunc("GET /", h.index)
@@ -175,6 +196,35 @@ func (h *handler) mutate(list string) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"applied": request.Apply, "dry_run": !request.Apply, "mutation": mutation})
 	}
+}
+
+func (h *handler) importFeed(w http.ResponseWriter, r *http.Request) {
+	var request FeedImportRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if request.List != "blocklist" && request.List != "whitelist" {
+		writeError(w, http.StatusBadRequest, "list must be blocklist or whitelist")
+		return
+	}
+	if strings.TrimSpace(request.Source) == "" {
+		writeError(w, http.StatusBadRequest, "source URL or path is required")
+		return
+	}
+
+	importer, ok := h.backend.(FeedImporter)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "feed import not supported by backend")
+		return
+	}
+
+	result, err := importer.ImportFeed(r.Context(), request)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (config Config) validate() error {
