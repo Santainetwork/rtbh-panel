@@ -11,7 +11,10 @@ func TestParseList(t *testing.T) {
 # Comment line
 // Another comment
 192.0.2.1
+365bet.one
+judionline.com
 192.0.2.2/32
+invalid-domain.xyz/something
 198.51.100.0/24 # inline comment
 
 2001:db8::1

@@ -47,7 +47,8 @@ func ParseList(r io.Reader, expandSlash24 bool) ([]netip.Prefix, error) {
 		if !strings.Contains(line, "/") {
 			addr, err := netip.ParseAddr(line)
 			if err != nil {
-				return nil, fmt.Errorf("feed: line %d: invalid IP address %q: %w", lineNum, line, err)
+				// Skip non-IP entries gracefully (e.g. domain names like 365bet.one)
+				continue
 			}
 			bits := 32
 			if addr.Is6() {
@@ -58,7 +59,8 @@ func ParseList(r io.Reader, expandSlash24 bool) ([]netip.Prefix, error) {
 			var err error
 			prefix, err = netip.ParsePrefix(line)
 			if err != nil {
-				return nil, fmt.Errorf("feed: line %d: invalid CIDR %q: %w", lineNum, line, err)
+				// Skip invalid CIDRs gracefully
+				continue
 			}
 		}
 
