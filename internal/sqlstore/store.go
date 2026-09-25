@@ -304,41 +304,61 @@ func (s *SQLStore) SyncFeedPolicies(ctx context.Context, feedID, feedName, list 
 		}
 	}
 
-	// 2. Remove obsolete prefixes
+	// 2. Remove obsolete prefixes in batches
 	if len(toRemove) > 0 {
-		stmt, err := tx.PrepareContext(ctx, `DELETE FROM policies WHERE feed_id = ? AND prefix = ?`)
-		if err != nil {
-			return nil, nil, err
-		}
-		for _, p := range toRemove {
-			if _, err := stmt.ExecContext(ctx, feedID, p); err != nil {
-				stmt.Close()
+		const deleteBatchSize = 500
+		for i := 0; i < len(toRemove); i += deleteBatchSize {
+			end := i + deleteBatchSize
+			if end > len(toRemove) {
+				end = len(toRemove)
+			}
+			chunk := toRemove[i:end]
+			var qb strings.Builder
+			qb.WriteString("DELETE FROM policies WHERE feed_id = ? AND prefix IN (")
+			args := make([]any, 0, len(chunk)+1)
+			args = append(args, feedID)
+			for j, p := range chunk {
+				if j > 0 {
+					qb.WriteString(",")
+				}
+				qb.WriteString("?")
+				args = append(args, p)
+			}
+			qb.WriteString(")")
+			if _, err := tx.ExecContext(ctx, qb.String(), args...); err != nil {
 				return nil, nil, err
 			}
 		}
-		stmt.Close()
 	}
 
-	// 3. Insert new prefixes in bulk chunks (e.g. 500 per chunk)
+	// 3. Insert new prefixes in bulk chunks (500 per chunk for lightning-fast ingest)
 	if len(toAdd) > 0 {
-		insertQuery := `INSERT INTO policies (prefix, list, source, feed_id) VALUES (?, ?, ?, ?)
-			ON CONFLICT(prefix, list) DO UPDATE SET source = excluded.source, feed_id = excluded.feed_id`
-		if s.driver == "mysql" {
-			insertQuery = `INSERT INTO policies (prefix, list, source, feed_id) VALUES (?, ?, ?, ?)
-				ON DUPLICATE KEY UPDATE source = VALUES(source), feed_id = VALUES(feed_id)`
-		}
-
-		stmt, err := tx.PrepareContext(ctx, insertQuery)
-		if err != nil {
-			return nil, nil, err
-		}
-		for _, p := range toAdd {
-			if _, err := stmt.ExecContext(ctx, p, list, feedName, feedID); err != nil {
-				stmt.Close()
+		const insertBatchSize = 500
+		for i := 0; i < len(toAdd); i += insertBatchSize {
+			end := i + insertBatchSize
+			if end > len(toAdd) {
+				end = len(toAdd)
+			}
+			chunk := toAdd[i:end]
+			var qb strings.Builder
+			qb.WriteString("INSERT INTO policies (prefix, list, source, feed_id) VALUES ")
+			args := make([]any, 0, len(chunk)*4)
+			for j, p := range chunk {
+				if j > 0 {
+					qb.WriteString(",")
+				}
+				qb.WriteString("(?, ?, ?, ?)")
+				args = append(args, p, list, feedName, feedID)
+			}
+			if s.driver == "mysql" {
+				qb.WriteString(" ON DUPLICATE KEY UPDATE source = VALUES(source), feed_id = VALUES(feed_id)")
+			} else {
+				qb.WriteString(" ON CONFLICT(prefix, list) DO UPDATE SET source = excluded.source, feed_id = excluded.feed_id")
+			}
+			if _, err := tx.ExecContext(ctx, qb.String(), args...); err != nil {
 				return nil, nil, err
 			}
 		}
-		stmt.Close()
 	}
 
 	// 4. Update feed metadata

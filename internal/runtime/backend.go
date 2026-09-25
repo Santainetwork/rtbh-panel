@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/arcelo/rtbh-panel/internal/agentrpc"
@@ -68,6 +69,8 @@ type dashboardBackend struct {
 	publish    func(dashboard.PolicyMutation)
 	controller *policyController
 	feedMgr    *feed.Manager
+	syncingMu  sync.Mutex
+	syncing    map[string]bool
 }
 
 func (b *dashboardBackend) Config(ctx context.Context) (dashboard.Config, error) {
@@ -514,6 +517,23 @@ func (b *dashboardBackend) DeleteFeed(ctx context.Context, id string) error {
 }
 
 func (b *dashboardBackend) SyncFeed(ctx context.Context, id string) (int, error) {
+	b.syncingMu.Lock()
+	if b.syncing == nil {
+		b.syncing = make(map[string]bool)
+	}
+	if b.syncing[id] {
+		b.syncingMu.Unlock()
+		return 0, nil // Already syncing in another goroutine, skip duplicate
+	}
+	b.syncing[id] = true
+	b.syncingMu.Unlock()
+
+	defer func() {
+		b.syncingMu.Lock()
+		delete(b.syncing, id)
+		b.syncingMu.Unlock()
+	}()
+
 	if b.sqlStore != nil {
 		feeds, err := b.sqlStore.ListFeeds(ctx)
 		if err != nil {
@@ -542,6 +562,8 @@ func (b *dashboardBackend) SyncFeed(ctx context.Context, id string) (int, error)
 		if err != nil {
 			return 0, err
 		}
+		nowStr := time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
+		_ = b.sqlStore.UpdateFeedStatus(ctx, id, len(strPrefixes), nowStr, "")
 		if err := b.controller.ApplyBatch(ctx, target.List, toAdd, toRemove); err != nil {
 			return len(strPrefixes), err
 		}
