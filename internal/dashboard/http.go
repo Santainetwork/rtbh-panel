@@ -60,6 +60,26 @@ type FeedImporter interface {
 	ImportFeed(context.Context, FeedImportRequest) (FeedImportResult, error)
 }
 
+type SourceFeed struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	List          string `json:"list"`
+	URL           string `json:"url"`
+	Interval      int    `json:"interval"` // seconds
+	Enabled       bool   `json:"enabled"`
+	LastSync      string `json:"last_sync,omitempty"`
+	PrefixCount   int    `json:"prefix_count"`
+	LastError     string `json:"last_error,omitempty"`
+	ExpandSubnets bool   `json:"expand_subnets"`
+}
+
+type FeedManagerBackend interface {
+	ListFeeds(context.Context) ([]SourceFeed, error)
+	SaveFeed(context.Context, SourceFeed) (SourceFeed, error)
+	DeleteFeed(context.Context, string) error
+	SyncFeed(context.Context, string) (int, error)
+}
+
 type Backend interface {
 	Config(context.Context) (Config, error)
 	UpdateConfig(context.Context, Config) error
@@ -88,6 +108,10 @@ func NewHandler(backend Backend, authorize Authorizer, static ...fs.FS) http.Han
 		h.mux.HandleFunc("POST "+prefix+"/block", h.mutate("blocklist"))
 		h.mux.HandleFunc("POST "+prefix+"/whitelist", h.mutate("whitelist"))
 		h.mux.HandleFunc("POST "+prefix+"/feed", h.importFeed)
+		h.mux.HandleFunc("GET "+prefix+"/feeds", h.getFeeds)
+		h.mux.HandleFunc("POST "+prefix+"/feeds", h.saveFeed)
+		h.mux.HandleFunc("POST "+prefix+"/feeds/delete", h.deleteFeed)
+		h.mux.HandleFunc("POST "+prefix+"/feeds/sync", h.syncFeed)
 	}
 	h.mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusNotFound, "not found") })
 	h.mux.HandleFunc("GET /", h.index)
@@ -225,6 +249,80 @@ func (h *handler) importFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *handler) getFeeds(w http.ResponseWriter, r *http.Request) {
+	manager, ok := h.backend.(FeedManagerBackend)
+	if !ok {
+		writeJSON(w, http.StatusOK, []SourceFeed{})
+		return
+	}
+	feeds, err := manager.ListFeeds(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, feeds)
+}
+
+func (h *handler) saveFeed(w http.ResponseWriter, r *http.Request) {
+	manager, ok := h.backend.(FeedManagerBackend)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "feed manager not supported")
+		return
+	}
+	var req SourceFeed
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	saved, err := manager.SaveFeed(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (h *handler) deleteFeed(w http.ResponseWriter, r *http.Request) {
+	manager, ok := h.backend.(FeedManagerBackend)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "feed manager not supported")
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil || req.ID == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	if err := manager.DeleteFeed(r.Context(), req.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "id": req.ID})
+}
+
+func (h *handler) syncFeed(w http.ResponseWriter, r *http.Request) {
+	manager, ok := h.backend.(FeedManagerBackend)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "feed manager not supported")
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil || req.ID == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	count, err := manager.SyncFeed(r.Context(), req.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "synced", "id": req.ID, "count": count})
 }
 
 func (config Config) validate() error {

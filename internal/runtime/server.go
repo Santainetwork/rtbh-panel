@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/arcelo/rtbh-panel/internal/agentrpc"
 	"github.com/arcelo/rtbh-panel/internal/bgpengine"
 	"github.com/arcelo/rtbh-panel/internal/dashboard"
+	"github.com/arcelo/rtbh-panel/internal/feed"
 	"github.com/arcelo/rtbh-panel/internal/policystore"
 	webui "github.com/arcelo/rtbh-panel/web"
 )
@@ -31,6 +33,7 @@ type Server struct {
 	store      *policystore.Store
 	queue      *policyQueue
 	controller *policyController
+	feedMgr    *feed.Manager
 
 	started  chan struct{}
 	once     sync.Once
@@ -84,7 +87,49 @@ func NewServer(config Config) (*Server, error) {
 	if !config.RTBHNextHopV4.IsValid() {
 		controller.nextHopV4 = config.RouterID
 	}
-	return &Server{config: config, engine: engine, store: store, queue: newPolicyQueue(), controller: controller, cursor: cursor, started: make(chan struct{})}, nil
+
+	feedFile := ""
+	if config.PolicyFile != "" {
+		feedFile = config.PolicyFile + ".feeds.json"
+	}
+	feedMgr, err := feed.OpenManager(feedFile, func(ctx context.Context, sf feed.FeedSource, prefixes []netip.Prefix) error {
+		if sf.List != "blocklist" && sf.List != "whitelist" {
+			return nil
+		}
+		for _, p := range prefixes {
+			_ = controller.Apply(ctx, dashboard.PolicyMutation{
+				Action: "add",
+				List:   sf.List,
+				Prefix: p.String(),
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("runtime: open feed manager: %w", err)
+	}
+	if config.BlocklistFeed != "" {
+		_, _ = feedMgr.Save(feed.FeedSource{
+			Name:          "Default Blocklist",
+			List:          "blocklist",
+			URL:           config.BlocklistFeed,
+			Interval:      config.FeedInterval,
+			Enabled:       true,
+			ExpandSubnets: false,
+		})
+	}
+	if config.WhitelistFeed != "" {
+		_, _ = feedMgr.Save(feed.FeedSource{
+			Name:          "Default Whitelist",
+			List:          "whitelist",
+			URL:           config.WhitelistFeed,
+			Interval:      config.FeedInterval,
+			Enabled:       true,
+			ExpandSubnets: config.WhitelistExpandSlash24,
+		})
+	}
+
+	return &Server{config: config, engine: engine, store: store, queue: newPolicyQueue(), controller: controller, cursor: cursor, feedMgr: feedMgr, started: make(chan struct{})}, nil
 }
 
 func (s *Server) Started() <-chan struct{} { return s.started }
@@ -131,21 +176,22 @@ func (s *Server) Run(ctx context.Context) error {
 			store:      s.store,
 			publish:    s.queue.publish,
 			controller: s.controller,
+			feedMgr:    s.feedMgr,
 		}, func(*http.Request) bool { return true }, webui.Dist()),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	errCh := make(chan error, 3)
+	errCh := make(chan error, 4)
 	var workers sync.WaitGroup
 	go func() { errCh <- normalizeServerError(httpServer.Serve(httpListener)) }()
 	go func() { errCh <- s.acceptSync(runCtx, syncListener, &workers) }()
 	if !s.config.DryRun {
 		go func() { errCh <- s.controller.RunExpiry(runCtx) }()
 	}
-	if s.config.BlocklistFeed != "" || s.config.WhitelistFeed != "" {
-		go func() { errCh <- s.runFeedSync(runCtx) }()
+	if s.feedMgr != nil {
+		go func() { errCh <- s.feedMgr.Run(runCtx) }()
 	}
 	s.once.Do(func() { close(s.started) })
 

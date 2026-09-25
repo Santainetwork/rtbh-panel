@@ -22,6 +22,7 @@ import {
   ShieldCheck,
   ShieldX,
   TerminalSquare,
+  Trash2,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -64,11 +65,13 @@ import {
   type Mutation,
   type PolicyAction,
   type PolicyList,
+  type SourceFeed,
 } from "@/lib/api"
 
 const nav = [
   { label: "Overview", href: "#overview", icon: Gauge },
   { label: "BGP sessions", href: "#sessions", icon: RadioTower },
+  { label: "Sources", href: "#sources", icon: Download },
   { label: "Policies", href: "#policies", icon: ListFilter },
   { label: "Activity", href: "#activity", icon: FileClock },
 ]
@@ -260,6 +263,146 @@ function ImportFeedDialog({ open, initialList, onOpenChange, onComplete, api, dr
   )
 }
 
+function SourcesSection({ feeds, onAddFeed, onDeleteFeed, onSyncFeed }: {
+  feeds: SourceFeed[]
+  onAddFeed: (feed: SourceFeed) => Promise<void>
+  onDeleteFeed: (id: string) => Promise<void>
+  onSyncFeed: (id: string) => Promise<void>
+}) {
+  const [name, setName] = useState("")
+  const [url, setUrl] = useState("")
+  const [list, setList] = useState<PolicyList>("blocklist")
+  const [interval, setInterval] = useState("3600")
+  const [busy, setBusy] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!name.trim() || !url.trim()) return
+    setBusy(true)
+    try {
+      await onAddFeed({
+        id: "",
+        name: name.trim(),
+        url: url.trim(),
+        list,
+        interval: parseInt(interval, 10),
+        enabled: true,
+        prefix_count: 0,
+        expand_subnets: true,
+      })
+      setName("")
+      setUrl("")
+      toast.success("Feed source added")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to add source")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const formatInterval = (sec: number) => {
+    if (sec <= 0) return "Manual"
+    if (sec < 3600) return `${Math.round(sec / 60)}m`
+    if (sec < 86400) return `${Math.round(sec / 3600)}h`
+    return `${Math.round(sec / 86400)}d`
+  }
+
+  return (
+    <section id="sources" className="content-grid">
+      <Card className="span-two">
+        <CardHeader>
+          <CardTitle>Threat Intelligence & Sources</CardTitle>
+          <CardDescription>Automated sources scheduled for periodic download into blocklist or whitelist.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSubmit} className="mb-6 p-4 rounded-lg border bg-card/50 flex flex-wrap gap-3 items-end">
+            <div className="flex-1 min-w-[160px]">
+              <Label className="text-xs">Source Name</Label>
+              <Input placeholder="e.g. Feodo Tracker" value={name} onChange={(e) => setName(e.target.value)} required />
+            </div>
+            <div className="flex-[2] min-w-[240px]">
+              <Label className="text-xs">Feed URL / Path</Label>
+              <Input placeholder="https://feodotracker.abuse.ch/downloads/ipblocklist.txt" value={url} onChange={(e) => setUrl(e.target.value)} required />
+            </div>
+            <div className="w-[120px]">
+              <Label className="text-xs">Target</Label>
+              <Select value={list} onValueChange={(v) => setList(v as PolicyList)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="blocklist">Blocklist</SelectItem>
+                  <SelectItem value="whitelist">Whitelist</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="w-[130px]">
+              <Label className="text-xs">Auto Update</Label>
+              <Select value={interval} onValueChange={setInterval}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="300">Every 5 mins</SelectItem>
+                  <SelectItem value="900">Every 15 mins</SelectItem>
+                  <SelectItem value="1800">Every 30 mins</SelectItem>
+                  <SelectItem value="3600">Every 1 hour</SelectItem>
+                  <SelectItem value="21600">Every 6 hours</SelectItem>
+                  <SelectItem value="43200">Every 12 hours</SelectItem>
+                  <SelectItem value="86400">Every 24 hours</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button type="submit" disabled={busy || !name.trim() || !url.trim()}><Plus /> Add Source</Button>
+          </form>
+
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Source</TableHead>
+                <TableHead>Target</TableHead>
+                <TableHead>URL</TableHead>
+                <TableHead>Interval</TableHead>
+                <TableHead>Prefixes</TableHead>
+                <TableHead>Last Sync</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {feeds.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center text-muted-foreground py-6">
+                    No threat feeds configured yet.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                feeds.map((f) => (
+                  <TableRow key={f.id}>
+                    <TableCell className="font-medium text-foreground">{f.name}</TableCell>
+                    <TableCell>
+                      <Badge variant={f.list === "blocklist" ? "destructive" : "secondary"}>
+                        {f.list === "blocklist" ? "BLOCK" : "ALLOW"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs max-w-[200px] truncate" title={f.url}>{f.url}</TableCell>
+                    <TableCell><Badge variant="outline">{formatInterval(f.interval)}</Badge></TableCell>
+                    <TableCell className="tabular-nums font-mono">{f.prefix_count} IPs</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{f.last_sync || "Never"}</TableCell>
+                    <TableCell className="text-right space-x-1">
+                      <Button aria-label={`Sync ${f.name}`} variant="ghost" size="sm" onClick={() => onSyncFeed(f.id)} title="Sync Now">
+                        <RefreshCw className="h-4 w-4" />
+                      </Button>
+                      <Button aria-label={`Delete ${f.name}`} variant="ghost" size="sm" onClick={() => onDeleteFeed(f.id)} title="Delete">
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+    </section>
+  )
+}
+
 function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; refresh: () => Promise<void>; api: DashboardApi }) {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
@@ -268,6 +411,34 @@ function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; re
   const established = snapshot.peers.filter((peer) => peer.state === "ESTABLISHED").length
   const openMutation = (list: PolicyList, action: PolicyAction, prefix = "") => { setMutation({ list, action, prefix }); setDialogOpen(true) }
   const openImportFeed = (list: PolicyList) => { setImportList(list); setImportDialogOpen(true) }
+
+  const handleAddFeed = async (f: SourceFeed) => {
+    if (api.saveFeed) {
+      await api.saveFeed(f)
+      await refresh()
+    }
+  }
+
+  const handleDeleteFeed = async (id: string) => {
+    if (api.deleteFeed) {
+      await api.deleteFeed(id)
+      await refresh()
+      toast.success("Feed source deleted")
+    }
+  }
+
+  const handleSyncFeed = async (id: string) => {
+    if (api.syncFeed) {
+      try {
+        toast.info("Syncing feed...")
+        const res = await api.syncFeed(id)
+        await refresh()
+        toast.success("Feed synced", { description: `${res.count} prefixes loaded.` })
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Sync failed")
+      }
+    }
+  }
 
   return (
     <>
@@ -314,6 +485,7 @@ function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; re
               <Card><CardHeader><CardTitle>Allowed remote ASN</CardTitle><CardDescription>Optional OPEN-stage admission policy.</CardDescription></CardHeader><CardContent className="asn-grid">{snapshot.config.allowedAsns.map((asn) => <Badge variant="outline" key={asn}>AS{asn}</Badge>)}</CardContent></Card>
             </div>
           </section>
+          <SourcesSection feeds={snapshot.feeds ?? []} onAddFeed={handleAddFeed} onDeleteFeed={handleDeleteFeed} onSyncFeed={handleSyncFeed} />
           <section id="policies"><div className="section-heading"><div><p className="eyebrow">ROUTE DECISIONS</p><h2>Policy inventory</h2></div><Badge variant="outline"><LockKeyhole /> whitelist precedence</Badge></div><Card><CardContent className="pt-0"><Tabs defaultValue="blocklist"><TabsList variant="line"><TabsTrigger value="blocklist"><ShieldX /> Blocklist <Badge variant="secondary">{snapshot.blocklist.length}</Badge></TabsTrigger><TabsTrigger value="whitelist"><ShieldCheck /> Whitelist <Badge variant="secondary">{snapshot.whitelist.length}</Badge></TabsTrigger></TabsList><TabsContent value="blocklist"><PolicyTable entries={snapshot.blocklist} list="blocklist" onMutate={openMutation} onImportFeed={openImportFeed} /></TabsContent><TabsContent value="whitelist"><PolicyTable entries={snapshot.whitelist} list="whitelist" onMutate={openMutation} onImportFeed={openImportFeed} /></TabsContent></Tabs></CardContent></Card></section>
           <section id="activity"><div className="section-heading"><div><p className="eyebrow">IMMUTABLE TRAIL</p><h2>Recent activity</h2></div><Badge variant="secondary"><Clock3 /> newest first</Badge></div><Card><CardContent><div className="activity-list">{snapshot.audit.map((event) => <div className="activity-row" key={event.id}><div className={`activity-icon ${event.result}`} >{event.result === "allowed" ? <CheckCircle2 /> : <ShieldX />}</div><div className="activity-main"><strong>{event.action}</strong><code>{event.target}</code><span>by {event.actor}</span></div><div className="activity-meta"><Badge variant={event.mode === "DRY RUN" ? "outline" : "secondary"}>{event.mode}</Badge><time>{event.timestamp}</time></div></div>)}</div></CardContent></Card></section>
         </main>

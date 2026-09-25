@@ -31,6 +31,19 @@ export interface AuditEntry {
   result: "allowed" | "rejected"
 }
 
+export interface SourceFeed {
+  id: string
+  name: string
+  list: PolicyList
+  url: string
+  interval: number // seconds
+  enabled: boolean
+  last_sync?: string
+  prefix_count: number
+  last_error?: string
+  expand_subnets: boolean
+}
+
 export interface DashboardSnapshot {
   source: "mock" | "http"
   config: DashboardConfig
@@ -38,6 +51,7 @@ export interface DashboardSnapshot {
   blocklist: string[]
   whitelist: string[]
   audit: AuditEntry[]
+  feeds?: SourceFeed[]
 }
 
 export interface Mutation {
@@ -71,6 +85,10 @@ export interface DashboardApi {
   snapshot(): Promise<DashboardSnapshot>
   mutate(mutation: Mutation): Promise<MutationResult>
   importFeed?(req: FeedImportRequest): Promise<FeedImportResult>
+  listFeeds?(): Promise<SourceFeed[]>
+  saveFeed?(feed: SourceFeed): Promise<SourceFeed>
+  deleteFeed?(id: string): Promise<void>
+  syncFeed?(id: string): Promise<{ status: string; count: number }>
 }
 
 const initialSnapshot: DashboardSnapshot = {
@@ -156,9 +174,10 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
 
   return {
     async snapshot() {
-      const [config, peers] = await Promise.all([
+      const [config, peers, feeds] = await Promise.all([
         request<{ local_asn: number; router_id: string; listen_ranges: string[]; peer_group: string; allowed_asns?: number[]; max_sessions: number; default_policy: "reject"; dry_run?: boolean; blocklist?: string[]; whitelist?: string[] }>("/api/v1/config"),
         request<Array<{ address: string; asn: number; state: PeerState }>>("/api/v1/peers"),
+        request<SourceFeed[]>("/api/v1/feeds").catch(() => []),
       ])
       return {
         source: "http",
@@ -167,6 +186,7 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
         blocklist: config.blocklist ?? [],
         whitelist: config.whitelist ?? [],
         audit: [],
+        feeds: feeds ?? [],
       }
     },
     mutate(mutation) {
@@ -185,6 +205,27 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
           expand_subnets: req.expandSubnets ?? true,
           apply: req.apply === true,
         }),
+      })
+    },
+    listFeeds() {
+      return request<SourceFeed[]>("/api/v1/feeds")
+    },
+    saveFeed(feed) {
+      return request<SourceFeed>("/api/v1/feeds", {
+        method: "POST",
+        body: JSON.stringify(feed),
+      })
+    },
+    async deleteFeed(id) {
+      await request<{ status: string }>("/api/v1/feeds/delete", {
+        method: "POST",
+        body: JSON.stringify({ id }),
+      })
+    },
+    syncFeed(id) {
+      return request<{ status: string; count: number }>("/api/v1/feeds/sync", {
+        method: "POST",
+        body: JSON.stringify({ id }),
       })
     },
   }

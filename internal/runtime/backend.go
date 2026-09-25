@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"github.com/arcelo/rtbh-panel/internal/agentrpc"
 	"github.com/arcelo/rtbh-panel/internal/dashboard"
@@ -52,6 +53,7 @@ type dashboardBackend struct {
 	store      *policystore.Store
 	publish    func(dashboard.PolicyMutation)
 	controller *policyController
+	feedMgr    *feed.Manager
 }
 
 func (b *dashboardBackend) Config(context.Context) (dashboard.Config, error) {
@@ -182,4 +184,68 @@ func (b *dashboardBackend) ImportFeed(ctx context.Context, req dashboard.FeedImp
 		}
 	}
 	return result, nil
+}
+
+func (b *dashboardBackend) ListFeeds(context.Context) ([]dashboard.SourceFeed, error) {
+	if b.feedMgr == nil {
+		return []dashboard.SourceFeed{}, nil
+	}
+	var res []dashboard.SourceFeed
+	for _, f := range b.feedMgr.List() {
+		lastSync := ""
+		if !f.LastSync.IsZero() {
+			lastSync = f.LastSync.Format("2006-01-02 15:04:05 UTC")
+		}
+		res = append(res, dashboard.SourceFeed{
+			ID:            f.ID,
+			Name:          f.Name,
+			List:          f.List,
+			URL:           f.URL,
+			Interval:      int(f.Interval.Seconds()),
+			Enabled:       f.Enabled,
+			LastSync:      lastSync,
+			PrefixCount:   f.PrefixCount,
+			LastError:     f.LastError,
+			ExpandSubnets: f.ExpandSubnets,
+		})
+	}
+	return res, nil
+}
+
+func (b *dashboardBackend) SaveFeed(_ context.Context, req dashboard.SourceFeed) (dashboard.SourceFeed, error) {
+	if b.feedMgr == nil {
+		return req, errors.New("feed manager not initialized")
+	}
+	interval := time.Duration(req.Interval) * time.Second
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	saved, err := b.feedMgr.Save(feed.FeedSource{
+		ID:            req.ID,
+		Name:          req.Name,
+		List:          req.List,
+		URL:           req.URL,
+		Interval:      interval,
+		Enabled:       req.Enabled,
+		ExpandSubnets: req.ExpandSubnets,
+	})
+	if err != nil {
+		return req, err
+	}
+	req.ID = saved.ID
+	return req, nil
+}
+
+func (b *dashboardBackend) DeleteFeed(_ context.Context, id string) error {
+	if b.feedMgr == nil {
+		return nil
+	}
+	return b.feedMgr.Delete(id)
+}
+
+func (b *dashboardBackend) SyncFeed(ctx context.Context, id string) (int, error) {
+	if b.feedMgr == nil {
+		return 0, nil
+	}
+	return b.feedMgr.SyncFeed(ctx, id)
 }
