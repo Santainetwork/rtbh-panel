@@ -345,7 +345,36 @@ func (b *dashboardBackend) ListFeeds(ctx context.Context) ([]dashboard.SourceFee
 			return nil, err
 		}
 		var res []dashboard.SourceFeed
+		now := time.Now().UTC()
 		for _, f := range feeds {
+			nextSync := "Manual"
+			status := "idle"
+			if f.LastError != "" {
+				status = "error"
+			} else if f.LastSync != "" {
+				status = "synced"
+			}
+			if f.Enabled && f.Interval > 0 {
+				if f.LastSync != "" {
+					if t, err := time.Parse("2006-01-02 15:04:05 UTC", f.LastSync); err == nil {
+						nextTime := t.Add(time.Duration(f.Interval) * time.Second)
+						if now.After(nextTime) {
+							nextSync = "Due now"
+						} else {
+							rem := nextTime.Sub(now)
+							if rem < time.Minute {
+								nextSync = "in < 1m"
+							} else if rem < time.Hour {
+								nextSync = fmt.Sprintf("in %dm", int(rem.Minutes()))
+							} else {
+								nextSync = fmt.Sprintf("in %dh %dm", int(rem.Hours()), int(rem.Minutes())%60)
+							}
+						}
+					}
+				} else {
+					nextSync = "Immediately"
+				}
+			}
 			res = append(res, dashboard.SourceFeed{
 				ID:            f.ID,
 				Name:          f.Name,
@@ -354,6 +383,8 @@ func (b *dashboardBackend) ListFeeds(ctx context.Context) ([]dashboard.SourceFee
 				Interval:      f.Interval,
 				Enabled:       f.Enabled,
 				LastSync:      f.LastSync,
+				NextSync:      nextSync,
+				Status:        status,
 				PrefixCount:   f.PrefixCount,
 				LastError:     f.LastError,
 				ExpandSubnets: f.ExpandSubnets,
@@ -365,10 +396,33 @@ func (b *dashboardBackend) ListFeeds(ctx context.Context) ([]dashboard.SourceFee
 		return []dashboard.SourceFeed{}, nil
 	}
 	var res []dashboard.SourceFeed
+	now := time.Now().UTC()
 	for _, f := range b.feedMgr.List() {
 		lastSync := ""
-		if !f.LastSync.IsZero() {
+		nextSync := "Manual"
+		status := "idle"
+		if f.LastError != "" {
+			status = "error"
+		} else if !f.LastSync.IsZero() {
+			status = "synced"
 			lastSync = f.LastSync.Format("2006-01-02 15:04:05 UTC")
+			if f.Enabled && f.Interval > 0 {
+				nextTime := f.LastSync.Add(f.Interval)
+				if now.After(nextTime) {
+					nextSync = "Due now"
+				} else {
+					rem := nextTime.Sub(now)
+					if rem < time.Minute {
+						nextSync = "in < 1m"
+					} else if rem < time.Hour {
+						nextSync = fmt.Sprintf("in %dm", int(rem.Minutes()))
+					} else {
+						nextSync = fmt.Sprintf("in %dh %dm", int(rem.Hours()), int(rem.Minutes())%60)
+					}
+				}
+			}
+		} else if f.Enabled && f.Interval > 0 {
+			nextSync = "Immediately"
 		}
 		res = append(res, dashboard.SourceFeed{
 			ID:            f.ID,
@@ -378,6 +432,8 @@ func (b *dashboardBackend) ListFeeds(ctx context.Context) ([]dashboard.SourceFee
 			Interval:      int(f.Interval.Seconds()),
 			Enabled:       f.Enabled,
 			LastSync:      lastSync,
+			NextSync:      nextSync,
+			Status:        status,
 			PrefixCount:   f.PrefixCount,
 			LastError:     f.LastError,
 			ExpandSubnets: f.ExpandSubnets,
@@ -405,6 +461,11 @@ func (b *dashboardBackend) SaveFeed(ctx context.Context, req dashboard.SourceFee
 			Enabled:       req.Enabled,
 			ExpandSubnets: req.ExpandSubnets,
 		})
+		if err == nil && req.Enabled {
+			go func(feedID string) {
+				_, _ = b.SyncFeed(context.Background(), feedID)
+			}(req.ID)
+		}
 		return req, err
 	}
 	if b.feedMgr == nil {
@@ -427,6 +488,11 @@ func (b *dashboardBackend) SaveFeed(ctx context.Context, req dashboard.SourceFee
 		return req, err
 	}
 	req.ID = saved.ID
+	if req.Enabled {
+		go func(feedID string) {
+			_, _ = b.SyncFeed(context.Background(), feedID)
+		}(req.ID)
+	}
 	return req, nil
 }
 

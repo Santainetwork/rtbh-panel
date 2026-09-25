@@ -192,22 +192,23 @@ func (s *Server) Run(ctx context.Context) error {
 	s.httpAddr = httpListener.Addr().String()
 	s.syncAddr = syncListener.Addr().String()
 	s.mu.Unlock()
+	backend := &dashboardBackend{
+		config:     s.config,
+		engine:     s.engine,
+		store:      s.store,
+		sqlStore:   s.sqlStore,
+		publish:    s.queue.publish,
+		controller: s.controller,
+		feedMgr:    s.feedMgr,
+	}
 	httpServer := &http.Server{
-		Handler: dashboard.NewHandler(&dashboardBackend{
-			config:     s.config,
-			engine:     s.engine,
-			store:      s.store,
-			sqlStore:   s.sqlStore,
-			publish:    s.queue.publish,
-			controller: s.controller,
-			feedMgr:    s.feedMgr,
-		}, dashboard.BearerTokenAuthorizer(s.config.APIToken), webui.Dist()),
+		Handler: dashboard.NewHandler(backend, dashboard.BearerTokenAuthorizer(s.config.APIToken), webui.Dist()),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	errCh := make(chan error, 4)
+	errCh := make(chan error, 5)
 	var workers sync.WaitGroup
 	go func() { errCh <- normalizeServerError(httpServer.Serve(httpListener)) }()
 	go func() { errCh <- s.acceptSync(runCtx, syncListener, &workers) }()
@@ -216,6 +217,9 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	if s.feedMgr != nil {
 		go func() { errCh <- s.feedMgr.Run(runCtx) }()
+	}
+	if s.sqlStore != nil {
+		go func() { errCh <- s.runSQLFeedSync(runCtx, backend) }()
 	}
 	s.once.Do(func() { close(s.started) })
 
@@ -314,4 +318,52 @@ func normalizeServerError(err error) error {
 		return nil
 	}
 	return err
+}
+
+func (s *Server) runSQLFeedSync(ctx context.Context, backend *dashboardBackend) error {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	syncDue := func() {
+		feeds, err := s.sqlStore.ListFeeds(ctx)
+		if err != nil {
+			return
+		}
+		now := time.Now().UTC()
+		for _, f := range feeds {
+			if !f.Enabled || f.Interval <= 0 {
+				continue
+			}
+			var due bool
+			if f.LastSync == "" {
+				due = true
+			} else if t, err := time.Parse(time.RFC3339, f.LastSync); err == nil {
+				if now.Sub(t) >= time.Duration(f.Interval)*time.Second {
+					due = true
+				}
+			} else if t, err := time.Parse("2006-01-02 15:04:05 UTC", f.LastSync); err == nil {
+				if now.Sub(t) >= time.Duration(f.Interval)*time.Second {
+					due = true
+				}
+			} else {
+				due = true
+			}
+
+			if due {
+				_, _ = backend.SyncFeed(ctx, f.ID)
+			}
+		}
+	}
+
+	// Initial run
+	syncDue()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			syncDue()
+		}
+	}
 }

@@ -41,9 +41,11 @@ export interface SourceFeed {
   interval: number // seconds
   enabled: boolean
   last_sync?: string
+  next_sync?: string
   prefix_count: number
   last_error?: string
   expand_subnets: boolean
+  status?: string
 }
 
 export interface PolicyItem {

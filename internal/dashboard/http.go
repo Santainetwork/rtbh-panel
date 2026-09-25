@@ -82,9 +82,11 @@ type SourceFeed struct {
 	Interval      int    `json:"interval"` // seconds
 	Enabled       bool   `json:"enabled"`
 	LastSync      string `json:"last_sync,omitempty"`
+	NextSync      string `json:"next_sync,omitempty"`
 	PrefixCount   int    `json:"prefix_count"`
 	LastError     string `json:"last_error,omitempty"`
 	ExpandSubnets bool   `json:"expand_subnets"`
+	Status        string `json:"status,omitempty"`
 }
 
 type FeedManagerBackend interface {

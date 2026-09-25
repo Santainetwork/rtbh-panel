@@ -442,11 +442,12 @@ function ImportFeedDialog({ open, initialList, onOpenChange, onComplete, api, dr
   )
 }
 
-function SourcesSection({ feeds, onAddFeed, onDeleteFeed, onSyncFeed }: {
+function SourcesSection({ feeds, onAddFeed, onDeleteFeed, onSyncFeed, syncingIds }: {
   feeds: SourceFeed[]
   onAddFeed: (feed: SourceFeed) => Promise<void>
   onDeleteFeed: (id: string) => Promise<void>
   onSyncFeed: (id: string) => Promise<void>
+  syncingIds: Set<string>
 }) {
   const [name, setName] = useState("")
   const [url, setUrl] = useState("")
@@ -540,39 +541,74 @@ function SourcesSection({ feeds, onAddFeed, onDeleteFeed, onSyncFeed }: {
                 <TableHead>Interval</TableHead>
                 <TableHead>Prefixes</TableHead>
                 <TableHead>Last Sync</TableHead>
+                <TableHead>Next Update</TableHead>
+                <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {feeds.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground py-6">
+                  <TableCell colSpan={9} className="text-center text-muted-foreground py-6">
                     No threat feeds configured yet.
                   </TableCell>
                 </TableRow>
               ) : (
-                feeds.map((f) => (
-                  <TableRow key={f.id}>
-                    <TableCell className="font-medium text-foreground">{f.name}</TableCell>
-                    <TableCell>
-                      <Badge variant={f.list === "blocklist" ? "destructive" : "secondary"}>
-                        {f.list === "blocklist" ? "BLOCK" : "ALLOW"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs max-w-[200px] truncate" title={f.url}>{f.url}</TableCell>
-                    <TableCell><Badge variant="outline">{formatInterval(f.interval)}</Badge></TableCell>
-                    <TableCell className="tabular-nums font-mono">{f.prefix_count} IPs</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{f.last_sync || "Never"}</TableCell>
-                    <TableCell className="text-right space-x-1">
-                      <Button aria-label={`Sync ${f.name}`} variant="ghost" size="sm" onClick={() => onSyncFeed(f.id)} title="Sync Now">
-                        <RefreshCw className="h-4 w-4" />
-                      </Button>
-                      <Button aria-label={`Delete ${f.name}`} variant="ghost" size="sm" onClick={() => onDeleteFeed(f.id)} title="Delete">
-                        <Trash2 className="h-4 w-4 text-destructive" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))
+                feeds.map((f) => {
+                  const isSyncing = syncingIds.has(f.id)
+                  return (
+                    <TableRow key={f.id}>
+                      <TableCell className="font-medium text-foreground">{f.name}</TableCell>
+                      <TableCell>
+                        <Badge variant={f.list === "blocklist" ? "destructive" : "secondary"}>
+                          {f.list === "blocklist" ? "BLOCK" : "ALLOW"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="font-mono text-xs max-w-[180px] truncate" title={f.url}>{f.url}</TableCell>
+                      <TableCell><Badge variant="outline">{formatInterval(f.interval)}</Badge></TableCell>
+                      <TableCell className="tabular-nums font-mono">{f.prefix_count} IPs</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{f.last_sync || "Never"}</TableCell>
+                      <TableCell className="text-xs font-medium text-primary">
+                        {f.next_sync || (f.enabled && f.interval > 0 ? "Pending" : "Manual")}
+                      </TableCell>
+                      <TableCell>
+                        {isSyncing ? (
+                          <Badge variant="outline" className="text-primary border-primary gap-1 animate-pulse">
+                            <RefreshCw className="h-3 w-3 animate-spin" /> Syncing...
+                          </Badge>
+                        ) : f.last_error ? (
+                          <Badge variant="destructive" title={f.last_error}>Error</Badge>
+                        ) : f.last_sync ? (
+                          <Badge variant="outline" className="text-emerald-500 border-emerald-500/30">Synced</Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-muted-foreground">Ready</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right space-x-1">
+                        <Button
+                          aria-label={`Sync ${f.name}`}
+                          variant="ghost"
+                          size="sm"
+                          disabled={isSyncing}
+                          onClick={() => onSyncFeed(f.id)}
+                          title="Sync Now"
+                        >
+                          <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin text-primary" : ""}`} />
+                        </Button>
+                        <Button
+                          aria-label={`Delete ${f.name}`}
+                          variant="ghost"
+                          size="sm"
+                          disabled={isSyncing}
+                          onClick={() => onDeleteFeed(f.id)}
+                          title="Delete"
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })
               )}
             </TableBody>
           </Table>
@@ -587,14 +623,19 @@ function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; re
   const [importDialogOpen, setImportDialogOpen] = useState(false)
   const [importList, setImportList] = useState<PolicyList>("blocklist")
   const [mutation, setMutation] = useState<Omit<Mutation, "apply">>({ list: "blocklist", action: "add", prefix: "" })
+  const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set())
   const established = snapshot.peers.filter((peer) => peer.state === "ESTABLISHED").length
   const openMutation = (list: PolicyList, action: PolicyAction, prefix = "") => { setMutation({ list, action, prefix }); setDialogOpen(true) }
   const openImportFeed = (list: PolicyList) => { setImportList(list); setImportDialogOpen(true) }
 
   const handleAddFeed = async (f: SourceFeed) => {
     if (api.saveFeed) {
-      await api.saveFeed(f)
+      const saved = await api.saveFeed(f)
       await refresh()
+      const targetId = saved?.id || f.id
+      if (targetId && api.syncFeed) {
+        handleSyncFeed(targetId)
+      }
     }
   }
 
@@ -608,13 +649,20 @@ function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; re
 
   const handleSyncFeed = async (id: string) => {
     if (api.syncFeed) {
+      setSyncingIds((prev) => new Set(prev).add(id))
       try {
-        toast.info("Syncing feed...")
+        toast.info("Downloading and processing feed prefixes...")
         const res = await api.syncFeed(id)
         await refresh()
-        toast.success("Feed synced", { description: `${res.count} prefixes loaded.` })
+        toast.success("Feed synced successfully", { description: `${res.count} prefixes populated.` })
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Sync failed")
+      } finally {
+        setSyncingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
       }
     }
   }
@@ -675,7 +723,7 @@ function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; re
               <Card><CardHeader><CardTitle>Allowed remote ASN</CardTitle><CardDescription>Optional OPEN-stage admission policy.</CardDescription></CardHeader><CardContent className="asn-grid">{snapshot.config.allowedAsns.map((asn) => <Badge variant="outline" key={asn}>AS{asn}</Badge>)}</CardContent></Card>
             </div>
           </section>
-          <SourcesSection feeds={snapshot.feeds ?? []} onAddFeed={handleAddFeed} onDeleteFeed={handleDeleteFeed} onSyncFeed={handleSyncFeed} />
+          <SourcesSection feeds={snapshot.feeds ?? []} onAddFeed={handleAddFeed} onDeleteFeed={handleDeleteFeed} onSyncFeed={handleSyncFeed} syncingIds={syncingIds} />
           <section id="policies"><div className="section-heading"><div><p className="eyebrow">ROUTE DECISIONS</p><h2>Policy inventory</h2></div><Badge variant="outline"><LockKeyhole /> whitelist precedence</Badge></div><Card><CardContent className="pt-0"><Tabs defaultValue="blocklist"><TabsList variant="line"><TabsTrigger value="blocklist"><ShieldX /> Blocklist <Badge variant="secondary">{(snapshot.config.blocklistCount ?? snapshot.blocklist.length).toLocaleString()}</Badge></TabsTrigger><TabsTrigger value="whitelist"><ShieldCheck /> Whitelist <Badge variant="secondary">{(snapshot.config.whitelistCount ?? snapshot.whitelist.length).toLocaleString()}</Badge></TabsTrigger></TabsList><TabsContent value="blocklist"><PolicyTable entries={snapshot.blocklist} policyItems={snapshot.policies} list="blocklist" api={api} totalCount={snapshot.config.blocklistCount ?? snapshot.blocklist.length} onMutate={openMutation} onImportFeed={openImportFeed} onBulkDelete={handleBulkDelete} /></TabsContent><TabsContent value="whitelist"><PolicyTable entries={snapshot.whitelist} policyItems={snapshot.policies} list="whitelist" api={api} totalCount={snapshot.config.whitelistCount ?? snapshot.whitelist.length} onMutate={openMutation} onImportFeed={openImportFeed} onBulkDelete={handleBulkDelete} /></TabsContent></Tabs></CardContent></Card></section>
           <section id="activity"><div className="section-heading"><div><p className="eyebrow">IMMUTABLE TRAIL</p><h2>Recent activity</h2></div><Badge variant="secondary"><Clock3 /> newest first</Badge></div><Card><CardContent><div className="activity-list">{snapshot.audit.map((event) => <div className="activity-row" key={event.id}><div className={`activity-icon ${event.result}`} >{event.result === "allowed" ? <CheckCircle2 /> : <ShieldX />}</div><div className="activity-main"><strong>{event.action}</strong><code>{event.target}</code><span>by {event.actor}</span></div><div className="activity-meta"><Badge variant={event.mode === "DRY RUN" ? "outline" : "secondary"}>{event.mode}</Badge><time>{event.timestamp}</time></div></div>)}</div></CardContent></Card></section>
         </main>
