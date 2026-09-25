@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/arcelo/rtbh-panel/internal/dashboard"
 	"github.com/arcelo/rtbh-panel/internal/feed"
 	"github.com/arcelo/rtbh-panel/internal/policystore"
+	"github.com/arcelo/rtbh-panel/internal/sqlstore"
 	webui "github.com/arcelo/rtbh-panel/web"
 )
 
@@ -30,6 +32,7 @@ type Server struct {
 	config     Config
 	engine     Engine
 	store      *policystore.Store
+	sqlStore   *sqlstore.SQLStore
 	queue      *policyQueue
 	controller *policyController
 	feedMgr    *feed.Manager
@@ -72,17 +75,37 @@ func NewServer(config Config) (*Server, error) {
 	var store *policystore.Store
 	if config.PolicyFile == "" {
 		store = policystore.New()
+	} else if strings.HasSuffix(config.PolicyFile, ".db") || strings.HasSuffix(config.PolicyFile, ".sqlite") {
+		store = policystore.New()
+		if config.DBDriver == "" {
+			config.DBDriver = "sqlite"
+			config.DBDSN = config.PolicyFile
+		}
 	} else {
 		store, err = policystore.Open(config.PolicyFile)
 		if err != nil {
 			return nil, fmt.Errorf("runtime: open policy store: %w", err)
 		}
 	}
+
+	var sqlStore *sqlstore.SQLStore
+	if config.DBDriver != "" {
+		dsn := config.DBDSN
+		if dsn == "" {
+			dsn = "policy.db"
+		}
+		var err error
+		sqlStore, err = sqlstore.Open(config.DBDriver, dsn)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: open sql store (%s): %w", config.DBDriver, err)
+		}
+	}
+
 	cursor, err := loadCursor(config.CursorFile)
 	if err != nil {
 		return nil, err
 	}
-	controller := newPolicyController(store, engine, config.DryRun, config.RTBHNextHopV4, config.RTBHNextHopV6, nil)
+	controller := newPolicyController(store, sqlStore, engine, config.DryRun, config.RTBHNextHopV4, config.RTBHNextHopV6, nil)
 	if !config.RTBHNextHopV4.IsValid() {
 		controller.nextHopV4 = config.RouterID
 	}
@@ -96,34 +119,13 @@ func NewServer(config Config) (*Server, error) {
 			if sf.List != "blocklist" && sf.List != "whitelist" {
 				return nil
 			}
-			for _, p := range toRemove {
-				_ = controller.Apply(ctx, dashboard.PolicyMutation{
-					Action: "remove",
-					List:   sf.List,
-					Prefix: p,
-				})
-			}
-			for _, p := range toAdd {
-				_ = controller.Apply(ctx, dashboard.PolicyMutation{
-					Action: "add",
-					List:   sf.List,
-					Prefix: p,
-				})
-			}
-			return nil
+			return controller.ApplyBatch(ctx, sf.List, toAdd, toRemove)
 		},
 		func(ctx context.Context, sf feed.FeedSource, prefixes []string) error {
 			if sf.List != "blocklist" && sf.List != "whitelist" {
 				return nil
 			}
-			for _, p := range prefixes {
-				_ = controller.Apply(ctx, dashboard.PolicyMutation{
-					Action: "remove",
-					List:   sf.List,
-					Prefix: p,
-				})
-			}
-			return nil
+			return controller.ApplyBatch(ctx, sf.List, nil, prefixes)
 		},
 	)
 	if err != nil {
@@ -150,7 +152,7 @@ func NewServer(config Config) (*Server, error) {
 		})
 	}
 
-	return &Server{config: config, engine: engine, store: store, queue: newPolicyQueue(), controller: controller, cursor: cursor, feedMgr: feedMgr, started: make(chan struct{})}, nil
+	return &Server{config: config, engine: engine, store: store, sqlStore: sqlStore, queue: newPolicyQueue(), controller: controller, cursor: cursor, feedMgr: feedMgr, started: make(chan struct{})}, nil
 }
 
 func (s *Server) Started() <-chan struct{} { return s.started }
@@ -195,6 +197,7 @@ func (s *Server) Run(ctx context.Context) error {
 			config:     s.config,
 			engine:     s.engine,
 			store:      s.store,
+			sqlStore:   s.sqlStore,
 			publish:    s.queue.publish,
 			controller: s.controller,
 			feedMgr:    s.feedMgr,

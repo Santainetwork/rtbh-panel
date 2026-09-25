@@ -83,10 +83,25 @@ Versioned endpoints are the primary interface; legacy paths remain aliases.
 
 | Method | Path | Purpose |
 | ------ | ---- | ------- |
-| GET | `/api/v1/config` | Runtime config and dry-run state |
+| GET | `/api/v1/config` | Runtime config, stats, and dry-run state |
+| GET | `/api/v1/policies` | Server-side paginated & filtered policy search |
+| POST | `/api/v1/policies/bulk-delete` | Bulk deletion of multiple prefixes in one atomic transaction |
 | GET | `/api/v1/peers` | Established peer status |
+| GET | `/api/v1/feeds` | List configured threat intelligence feed sources |
+| POST | `/api/v1/feeds` | Add or update feed source with auto-sync interval |
+| POST | `/api/v1/feeds/delete` | Delete feed source and automatically cascade-remove its IPs |
+| POST | `/api/v1/feeds/sync` | Trigger instant on-demand sync of a specific feed |
 | POST | `/api/v1/block` | Add/remove deny prefix (`apply` explicit) |
 | POST | `/api/v1/whitelist` | Add/remove allow prefix (`apply` explicit) |
+
+## Database Backends (SQL)
+
+By default, `rtbh-server` runs with an embedded, zero-dependency pure-Go **SQLite** engine with Write-Ahead Logging (WAL) enabled, handling feeds with hundreds of thousands of IPs without high CPU or freezing.
+
+You can also connect to external SQL databases via CLI flags or ENV:
+* **SQLite:** `--db-driver=sqlite --db-dsn=policy.db` (Default)
+* **PostgreSQL:** `--db-driver=postgres --db-dsn="postgres://user:pass@127.0.0.1:5432/rtbh?sslmode=disable"`
+* **MySQL / MariaDB:** `--db-driver=mysql --db-dsn="user:pass@tcp(127.0.0.1:3306)/rtbh?parseTime=true"`
 
 Blocklist add accepts optional future `expires_at` (RFC 3339).
 

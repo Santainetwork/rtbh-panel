@@ -91,13 +91,16 @@ function MetricCard({ label, value, detail, icon: Icon, tone = "normal" }: { lab
   )
 }
 
-function PolicyTable({ entries, policyItems = [], list, onMutate, onImportFeed, onBulkDelete }: {
+function PolicyTable({ entries, policyItems = [], list, api, totalCount, onMutate, onImportFeed, onBulkDelete, refreshTrigger }: {
   entries: string[]
   policyItems?: PolicyItem[]
   list: PolicyList
+  api?: DashboardApi
+  totalCount?: number
   onMutate: (list: PolicyList, action: PolicyAction, prefix?: string) => void
   onImportFeed: (list: PolicyList) => void
   onBulkDelete?: (list: PolicyList, prefixes: string[]) => Promise<void>
+  refreshTrigger?: number
 }) {
   const isBlock = list === "blocklist"
   const [search, setSearch] = useState("")
@@ -105,6 +108,25 @@ function PolicyTable({ entries, policyItems = [], list, onMutate, onImportFeed, 
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(25)
   const [deleting, setDeleting] = useState(false)
+  const [serverData, setServerData] = useState<{ items: PolicyItem[]; total: number; totalPages: number } | null>(null)
+
+  useEffect(() => {
+    const fetchFn = api?.getPolicies
+    if (!fetchFn) return
+    let active = true
+    const fetchPage = async () => {
+      try {
+        const res = await fetchFn(list, page, pageSize, search)
+        if (active) {
+          setServerData({ items: res.items, total: res.total, totalPages: res.total_pages })
+        }
+      } catch {
+        // fallback to memory
+      }
+    }
+    fetchPage()
+    return () => { active = false }
+  }, [api, list, page, pageSize, search, refreshTrigger])
 
   const sourceMap = useMemo(() => {
     const map = new Map<string, string>()
@@ -117,20 +139,24 @@ function PolicyTable({ entries, policyItems = [], list, onMutate, onImportFeed, 
   }, [policyItems, list])
 
   const filtered = useMemo(() => {
+    if (serverData) return []
     if (!search.trim()) return entries
     const q = search.trim().toLowerCase()
     return entries.filter((p) => {
       const src = (sourceMap.get(p) || "manual").toLowerCase()
       return p.toLowerCase().includes(q) || src.includes(q)
     })
-  }, [entries, search, sourceMap])
+  }, [serverData, entries, search, sourceMap])
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const totalPages = serverData ? serverData.totalPages : Math.max(1, Math.ceil(filtered.length / pageSize))
   const currentPage = Math.min(page, totalPages)
+  const effectiveTotal = serverData ? serverData.total : (totalCount ?? entries.length)
+
   const pageEntries = useMemo(() => {
+    if (serverData) return serverData.items.map(it => it.prefix)
     const start = (currentPage - 1) * pageSize
     return filtered.slice(start, start + pageSize)
-  }, [filtered, currentPage, pageSize])
+  }, [serverData, filtered, currentPage, pageSize])
 
   const allVisibleSelected = pageEntries.length > 0 && pageEntries.every((p) => selected.has(p))
   const toggleSelectAll = () => {
@@ -174,7 +200,7 @@ function PolicyTable({ entries, policyItems = [], list, onMutate, onImportFeed, 
     <div className="policy-table-wrap">
       <div className="section-toolbar flex-wrap gap-3">
         <div>
-          <p className="section-kicker">{entries.length} total prefixes {filtered.length !== entries.length && `(${filtered.length} matching)`}</p>
+          <p className="section-kicker">{effectiveTotal.toLocaleString()} total prefixes</p>
           <p className="section-note">{isBlock ? "Advertised with RTBH community after approval." : "Whitelist wins over every block decision."}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -234,7 +260,8 @@ function PolicyTable({ entries, policyItems = [], list, onMutate, onImportFeed, 
             </TableRow>
           ) : (
             pageEntries.map((prefix) => {
-              const src = sourceMap.get(prefix) || "Manual"
+              const it = serverData?.items.find(i => i.prefix === prefix)
+              const src = it?.source || sourceMap.get(prefix) || "Manual"
               const isSelected = selected.has(prefix)
               return (
                 <TableRow key={prefix} data-state={isSelected ? "selected" : undefined}>
@@ -261,7 +288,7 @@ function PolicyTable({ entries, policyItems = [], list, onMutate, onImportFeed, 
 
       <div className="flex items-center justify-between border-t pt-3 mt-2 text-xs text-muted-foreground">
         <div>
-          Showing {pageEntries.length > 0 ? (currentPage - 1) * pageSize + 1 : 0} - {Math.min(currentPage * pageSize, filtered.length)} of {filtered.length} prefixes
+          Showing {pageEntries.length > 0 ? (currentPage - 1) * pageSize + 1 : 0} - {Math.min(currentPage * pageSize, effectiveTotal)} of {effectiveTotal.toLocaleString()} prefixes
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" disabled={currentPage <= 1} onClick={() => setPage(p => p - 1)}>
@@ -636,7 +663,7 @@ function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; re
             <MetricCard label="BGP sessions" value={`${established} / ${snapshot.config.maxSessions}`} detail="Established / session ceiling" icon={Network} tone="safe" />
             <MetricCard label="Local ASN" value={`AS${snapshot.config.localAsn}`} detail={`Router ID ${snapshot.config.routerId}`} icon={Braces} />
             <MetricCard label="Default policy" value="REJECT" detail="Unmatched routes are denied" icon={ShieldX} tone="warning" />
-            <MetricCard label="Active policy" value={`${snapshot.blocklist.length + snapshot.whitelist.length}`} detail={`${snapshot.blocklist.length} block · ${snapshot.whitelist.length} allow`} icon={Blocks} />
+            <MetricCard label="Active policy" value={`${(snapshot.config.blocklistCount ?? snapshot.blocklist.length) + (snapshot.config.whitelistCount ?? snapshot.whitelist.length)}`} detail={`${(snapshot.config.blocklistCount ?? snapshot.blocklist.length).toLocaleString()} block · ${(snapshot.config.whitelistCount ?? snapshot.whitelist.length).toLocaleString()} allow`} icon={Blocks} />
           </section>
           <section id="sessions" className="content-grid">
             <Card className="span-two">
@@ -649,7 +676,7 @@ function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; re
             </div>
           </section>
           <SourcesSection feeds={snapshot.feeds ?? []} onAddFeed={handleAddFeed} onDeleteFeed={handleDeleteFeed} onSyncFeed={handleSyncFeed} />
-          <section id="policies"><div className="section-heading"><div><p className="eyebrow">ROUTE DECISIONS</p><h2>Policy inventory</h2></div><Badge variant="outline"><LockKeyhole /> whitelist precedence</Badge></div><Card><CardContent className="pt-0"><Tabs defaultValue="blocklist"><TabsList variant="line"><TabsTrigger value="blocklist"><ShieldX /> Blocklist <Badge variant="secondary">{snapshot.blocklist.length}</Badge></TabsTrigger><TabsTrigger value="whitelist"><ShieldCheck /> Whitelist <Badge variant="secondary">{snapshot.whitelist.length}</Badge></TabsTrigger></TabsList><TabsContent value="blocklist"><PolicyTable entries={snapshot.blocklist} policyItems={snapshot.policies} list="blocklist" onMutate={openMutation} onImportFeed={openImportFeed} onBulkDelete={handleBulkDelete} /></TabsContent><TabsContent value="whitelist"><PolicyTable entries={snapshot.whitelist} policyItems={snapshot.policies} list="whitelist" onMutate={openMutation} onImportFeed={openImportFeed} onBulkDelete={handleBulkDelete} /></TabsContent></Tabs></CardContent></Card></section>
+          <section id="policies"><div className="section-heading"><div><p className="eyebrow">ROUTE DECISIONS</p><h2>Policy inventory</h2></div><Badge variant="outline"><LockKeyhole /> whitelist precedence</Badge></div><Card><CardContent className="pt-0"><Tabs defaultValue="blocklist"><TabsList variant="line"><TabsTrigger value="blocklist"><ShieldX /> Blocklist <Badge variant="secondary">{(snapshot.config.blocklistCount ?? snapshot.blocklist.length).toLocaleString()}</Badge></TabsTrigger><TabsTrigger value="whitelist"><ShieldCheck /> Whitelist <Badge variant="secondary">{(snapshot.config.whitelistCount ?? snapshot.whitelist.length).toLocaleString()}</Badge></TabsTrigger></TabsList><TabsContent value="blocklist"><PolicyTable entries={snapshot.blocklist} policyItems={snapshot.policies} list="blocklist" api={api} totalCount={snapshot.config.blocklistCount ?? snapshot.blocklist.length} onMutate={openMutation} onImportFeed={openImportFeed} onBulkDelete={handleBulkDelete} /></TabsContent><TabsContent value="whitelist"><PolicyTable entries={snapshot.whitelist} policyItems={snapshot.policies} list="whitelist" api={api} totalCount={snapshot.config.whitelistCount ?? snapshot.whitelist.length} onMutate={openMutation} onImportFeed={openImportFeed} onBulkDelete={handleBulkDelete} /></TabsContent></Tabs></CardContent></Card></section>
           <section id="activity"><div className="section-heading"><div><p className="eyebrow">IMMUTABLE TRAIL</p><h2>Recent activity</h2></div><Badge variant="secondary"><Clock3 /> newest first</Badge></div><Card><CardContent><div className="activity-list">{snapshot.audit.map((event) => <div className="activity-row" key={event.id}><div className={`activity-icon ${event.result}`} >{event.result === "allowed" ? <CheckCircle2 /> : <ShieldX />}</div><div className="activity-main"><strong>{event.action}</strong><code>{event.target}</code><span>by {event.actor}</span></div><div className="activity-meta"><Badge variant={event.mode === "DRY RUN" ? "outline" : "secondary"}>{event.mode}</Badge><time>{event.timestamp}</time></div></div>)}</div></CardContent></Card></section>
         </main>
       </SidebarInset>

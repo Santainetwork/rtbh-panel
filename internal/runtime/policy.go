@@ -12,11 +12,13 @@ import (
 	"github.com/arcelo/rtbh-panel/internal/bgpengine"
 	"github.com/arcelo/rtbh-panel/internal/dashboard"
 	"github.com/arcelo/rtbh-panel/internal/policystore"
+	"github.com/arcelo/rtbh-panel/internal/sqlstore"
 )
 
 type policyController struct {
 	mu        sync.Mutex
 	store     *policystore.Store
+	sqlStore  *sqlstore.SQLStore
 	engine    Engine
 	dryRun    bool
 	nextHopV4 netip.Addr
@@ -26,8 +28,8 @@ type policyController struct {
 	wake      chan struct{}
 }
 
-func newPolicyController(store *policystore.Store, engine Engine, dryRun bool, nextHopV4, nextHopV6 netip.Addr, publish func(dashboard.PolicyMutation)) *policyController {
-	return &policyController{store: store, engine: engine, dryRun: dryRun, nextHopV4: nextHopV4, nextHopV6: nextHopV6, publish: publish, active: make(map[netip.Prefix]bgpengine.Route), wake: make(chan struct{}, 1)}
+func newPolicyController(store *policystore.Store, sqlStore *sqlstore.SQLStore, engine Engine, dryRun bool, nextHopV4, nextHopV6 netip.Addr, publish func(dashboard.PolicyMutation)) *policyController {
+	return &policyController{store: store, sqlStore: sqlStore, engine: engine, dryRun: dryRun, nextHopV4: nextHopV4, nextHopV6: nextHopV6, publish: publish, active: make(map[netip.Prefix]bgpengine.Route), wake: make(chan struct{}, 1)}
 }
 
 func (c *policyController) Reconcile(now time.Time) error {
@@ -43,7 +45,7 @@ func (c *policyController) Reconcile(now time.Time) error {
 	return c.applyDelta(desired)
 }
 
-func (c *policyController) Apply(_ context.Context, mutation dashboard.PolicyMutation) error {
+func (c *policyController) Apply(ctx context.Context, mutation dashboard.PolicyMutation) error {
 	if c.dryRun {
 		return errors.New("runtime: apply rejected while dry-run is enabled")
 	}
@@ -53,7 +55,82 @@ func (c *policyController) Apply(_ context.Context, mutation dashboard.PolicyMut
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.sqlStore != nil {
+		if mutation.Action == "add" || mutation.Action == "replace" {
+			if err := c.sqlStore.AddPolicy(ctx, mutation.Prefix, mutation.List, "Manual", "", mutation.ExpiresAt); err != nil {
+				return err
+			}
+		} else if mutation.Action == "remove" || mutation.Action == "delete" {
+			if err := c.sqlStore.RemovePolicy(ctx, mutation.Prefix, mutation.List); err != nil {
+				return err
+			}
+		}
+		_ = c.sqlStore.RecordAudit(ctx, mutation.Action, mutation.List, mutation.Prefix)
+		desired, err := c.routes(time.Now())
+		if err != nil {
+			return err
+		}
+		if err := c.applyDelta(desired); err != nil {
+			return err
+		}
+		if c.publish != nil {
+			c.publish(mutation)
+		}
+		return nil
+	}
+
 	return c.applyLocked(mutation)
+}
+
+func (c *policyController) ApplyBatch(_ context.Context, listStr string, toAdd []string, toRemove []string) error {
+	if c.dryRun {
+		return errors.New("runtime: apply rejected while dry-run is enabled")
+	}
+	if len(toAdd) == 0 && len(toRemove) == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 1. Process removals
+	for _, raw := range toRemove {
+		prefix, err := netip.ParsePrefix(raw)
+		if err != nil {
+			continue
+		}
+		if listStr == "blocklist" {
+			if route, ok := c.active[prefix]; ok {
+				_ = c.engine.Withdraw(route)
+				delete(c.active, prefix)
+			}
+		}
+	}
+
+	// 2. Process additions
+	for _, raw := range toAdd {
+		prefix, err := netip.ParsePrefix(raw)
+		if err != nil {
+			continue
+		}
+		if listStr == "blocklist" {
+			nextHop := c.nextHopV4
+			if prefix.Addr().Is6() {
+				nextHop = c.nextHopV6
+			}
+			route := bgpengine.Route{
+				Prefix:      prefix,
+				NextHop:     nextHop,
+				Communities: []uint32{bgpengine.BlackholeCommunity},
+			}
+			if _, ok := c.active[prefix]; !ok {
+				if err := c.engine.Announce(route); err == nil {
+					c.active[prefix] = route
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (c *policyController) applyLocked(mutation dashboard.PolicyMutation) error {
@@ -166,6 +243,11 @@ func (c *policyController) applyExpired(now time.Time) error {
 }
 
 func (c *policyController) routes(now time.Time) (map[netip.Prefix]bgpengine.Route, error) {
+	if c.sqlStore != nil {
+		blocklist, _ := c.sqlStore.AllPrefixes(context.Background(), "blocklist")
+		whitelist, _ := c.sqlStore.AllPrefixes(context.Background(), "whitelist")
+		return effectiveRoutes(blocklist, whitelist, nil, now, c.nextHopV4, c.nextHopV6), nil
+	}
 	blocklist, err := c.store.Prefixes(policystore.Blocklist)
 	if err != nil {
 		return nil, err

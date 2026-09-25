@@ -25,6 +25,7 @@ var configEnvironmentKeys = []string{
 	"RTBH_DRY_RUN", "RTBH_SHUTDOWN_TIMEOUT", "RTBH_INSECURE_LISTEN",
 	"RTBH_NEXT_HOP_V4", "RTBH_NEXT_HOP_V6",
 	"RTBH_BLOCKLIST_FEED", "RTBH_WHITELIST_FEED", "RTBH_FEED_INTERVAL", "RTBH_WHITELIST_EXPAND_SLASH24",
+	"RTBH_DB_DRIVER", "RTBH_DB_DSN",
 }
 
 type Config struct {
@@ -52,6 +53,8 @@ type Config struct {
 	WhitelistFeed           string
 	FeedInterval            time.Duration
 	WhitelistExpandSlash24 bool
+	DBDriver                string
+	DBDSN                   string
 }
 
 func DefaultConfig() Config {
@@ -142,6 +145,8 @@ func loadConfig(fs *flag.FlagSet, args []string, mode configMode) (Config, error
 	fs.IntVar(&config.SyncMaxMessageBytes, "max-message-bytes", config.SyncMaxMessageBytes, "maximum policy-sync frame size")
 	fs.IntVar(&config.SyncMaxInFlight, "max-in-flight", config.SyncMaxInFlight, "maximum unacknowledged policy messages")
 	fs.StringVar(&config.PolicyFile, "policy-file", config.PolicyFile, "optional policy store file")
+	fs.StringVar(&config.DBDriver, "db-driver", config.DBDriver, "database driver (sqlite, mysql, postgres)")
+	fs.StringVar(&config.DBDSN, "db-dsn", config.DBDSN, "database DSN or path (e.g. rtbh.db or connection URL)")
 	fs.StringVar(&config.CursorFile, "cursor-file", config.CursorFile, "optional applied-cursor file")
 	fs.BoolVar(&config.DryRun, "dry-run", config.DryRun, "use the no-op policy adapter")
 	fs.BoolVar(&config.InsecureListen, "insecure-listen", config.InsecureListen, "allow non-loopback HTTP and sync listen addresses without TLS")
@@ -317,6 +322,8 @@ func applyEnvironment(config *Config) error {
 		return err
 	}
 	applyStringEnv(&config.PolicyFile, "RTBH_POLICY_FILE")
+	applyStringEnv(&config.DBDriver, "RTBH_DB_DRIVER")
+	applyStringEnv(&config.DBDSN, "RTBH_DB_DSN")
 	applyStringEnv(&config.CursorFile, "RTBH_CURSOR_FILE")
 	if config.DryRun, err = envBool("RTBH_DRY_RUN", config.DryRun); err != nil {
 		return err

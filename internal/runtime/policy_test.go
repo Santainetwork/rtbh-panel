@@ -40,7 +40,7 @@ func testPolicyController(t *testing.T, dryRun bool) (*policyController, *policy
 	t.Helper()
 	store := policystore.New()
 	engine := &recordingRouteEngine{}
-	controller := newPolicyController(store, engine, dryRun, netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("::1"), nil)
+	controller := newPolicyController(store, nil, engine, dryRun, netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("::1"), nil)
 	return controller, store, engine
 }
 
@@ -112,7 +112,7 @@ func TestPolicyControllerStartupReconcilesPersistedDeny(t *testing.T) {
 	store := policystore.New()
 	_, _ = store.Add(policystore.Blocklist, netip.MustParsePrefix("203.0.113.0/24"))
 	engine := &recordingRouteEngine{}
-	controller := newPolicyController(store, engine, false, netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("::1"), nil)
+	controller := newPolicyController(store, nil, engine, false, netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("::1"), nil)
 	if err := controller.Reconcile(time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestPolicyControllerDoesNotPersistWhenBGPFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := &recordingRouteEngine{announceErr: errors.New("BGP failed")}
-	controller := newPolicyController(store, engine, false, netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("::1"), nil)
+	controller := newPolicyController(store, nil, engine, false, netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("::1"), nil)
 	err = controller.Apply(context.Background(), dashboard.PolicyMutation{Action: "add", List: "blocklist", Prefix: "203.0.113.0/24"})
 	if err == nil || store.Blocked(netip.MustParseAddr("203.0.113.1")) {
 		t.Fatalf("err=%v", err)
@@ -141,7 +141,7 @@ func TestPolicyControllerExpiresDenyAndWithdraws(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := &recordingRouteEngine{}
-	controller := newPolicyController(store, engine, false, netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("::1"), nil)
+	controller := newPolicyController(store, nil, engine, false, netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("::1"), nil)
 	expiresAt := time.Now().Add(time.Minute)
 	mutation := dashboard.PolicyMutation{Action: "add", List: "blocklist", Prefix: "203.0.113.0/24", ExpiresAt: &expiresAt}
 	if err := controller.Apply(context.Background(), mutation); err != nil {

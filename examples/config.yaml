@@ -37,6 +37,18 @@ cursor_file: "/var/run/rtbh-agent.cursor"  # Agent stream offset tracking file
 shutdown_timeout: "5s"                  # Graceful shutdown timeout
 default_action: reject                  # Unmatched traffic default action
 
+# --- High-Performance Database Backend (SQL: SQLite / MySQL / PostgreSQL) ---
+# Recommended for feeds with thousands to millions of IPs (prevents high CPU and UI unresponsiveness).
+# Supported drivers: "sqlite" (default pure-Go), "postgres", "mysql".
+db_driver: "sqlite"                     # "sqlite", "postgres", or "mysql" (CLI: --db-driver, ENV: RTBH_DB_DRIVER)
+db_dsn: "/var/lib/rtbh-panel/policy.db" # Database path or connection URI (CLI: --db-dsn, ENV: RTBH_DB_DSN)
+# PostgreSQL Example:
+#   db_driver: "postgres"
+#   db_dsn: "postgres://user:password@127.0.0.1:5432/rtbh?sslmode=disable"
+# MySQL / MariaDB Example:
+#   db_driver: "mysql"
+#   db_dsn: "user:password@tcp(127.0.0.1:3306)/rtbh?parseTime=true"
+
 # --- External Feeds (Pastebin / URL / Text File Sync) ---
 # Automatically download and sync list of IPs/CIDRs from external URL or local file:
 blocklist_feed: "https://pastebin.com/raw/example-blocklist" # URL or file path (1 IP/CIDR per line)

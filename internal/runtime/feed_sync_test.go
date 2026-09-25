@@ -28,6 +28,7 @@ func TestServerSyncFeedWhitelistExpansion(t *testing.T) {
 		store:  store,
 		controller: newPolicyController(
 			store,
+			nil,
 			&stubEngine{},
 			false,
 			netip.MustParseAddr("192.0.2.1"),

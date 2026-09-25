@@ -11,6 +11,8 @@ export interface DashboardConfig {
   maxSessions: number
   defaultPolicy: "reject"
   dryRun: boolean
+  blocklistCount?: number
+  whitelistCount?: number
 }
 
 export interface Peer {
@@ -48,6 +50,14 @@ export interface PolicyItem {
   prefix: string
   source?: string
   list: PolicyList
+}
+
+export interface PaginatedPolicies {
+  items: PolicyItem[]
+  total: number
+  page: number
+  limit: number
+  total_pages: number
 }
 
 export interface DashboardSnapshot {
@@ -97,6 +107,7 @@ export interface DashboardApi {
   deleteFeed?(id: string): Promise<void>
   syncFeed?(id: string): Promise<{ status: string; count: number }>
   bulkDelete?(list: PolicyList, prefixes: string[]): Promise<void>
+  getPolicies?(list: PolicyList, page: number, limit: number, search?: string): Promise<PaginatedPolicies>
 }
 
 const initialSnapshot: DashboardSnapshot = {
@@ -183,13 +194,24 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
   return {
     async snapshot() {
       const [config, peers, feeds] = await Promise.all([
-        request<{ local_asn: number; router_id: string; listen_ranges: string[]; peer_group: string; allowed_asns?: number[]; max_sessions: number; default_policy: "reject"; dry_run?: boolean; blocklist?: string[]; whitelist?: string[]; policies?: PolicyItem[] }>("/api/v1/config"),
+        request<{ local_asn: number; router_id: string; listen_ranges: string[]; peer_group: string; allowed_asns?: number[]; max_sessions: number; default_policy: "reject"; dry_run?: boolean; blocklist?: string[]; whitelist?: string[]; policies?: PolicyItem[]; blocklist_count?: number; whitelist_count?: number }>("/api/v1/config"),
         request<Array<{ address: string; asn: number; state: PeerState }>>("/api/v1/peers"),
         request<SourceFeed[]>("/api/v1/feeds").catch(() => []),
       ])
       return {
         source: "http",
-        config: { localAsn: config.local_asn, routerId: config.router_id, listenRanges: config.listen_ranges, peerGroup: config.peer_group, allowedAsns: config.allowed_asns ?? [], maxSessions: config.max_sessions, defaultPolicy: config.default_policy, dryRun: config.dry_run !== false },
+        config: {
+          localAsn: config.local_asn,
+          routerId: config.router_id,
+          listenRanges: config.listen_ranges,
+          peerGroup: config.peer_group,
+          allowedAsns: config.allowed_asns ?? [],
+          maxSessions: config.max_sessions,
+          defaultPolicy: config.default_policy,
+          dryRun: config.dry_run !== false,
+          blocklistCount: config.blocklist_count,
+          whitelistCount: config.whitelist_count,
+        },
         peers: peers.map((peer) => ({ ...peer, uptime: "—", received: 0 })),
         blocklist: config.blocklist ?? [],
         whitelist: config.whitelist ?? [],
@@ -197,6 +219,15 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
         audit: [],
         feeds: feeds ?? [],
       }
+    },
+    getPolicies(list, page, limit, search) {
+      const params = new URLSearchParams({
+        list,
+        page: String(page),
+        limit: String(limit),
+      })
+      if (search) params.set("search", search)
+      return request<PaginatedPolicies>(`/api/v1/policies?${params.toString()}`)
     },
     mutate(mutation) {
       const path = mutation.list === "blocklist" ? "/api/v1/block" : "/api/v1/whitelist"

@@ -2,15 +2,20 @@ package runtime
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/arcelo/rtbh-panel/internal/agentrpc"
 	"github.com/arcelo/rtbh-panel/internal/dashboard"
 	"github.com/arcelo/rtbh-panel/internal/feed"
 	"github.com/arcelo/rtbh-panel/internal/policystore"
+	"github.com/arcelo/rtbh-panel/internal/sqlstore"
 )
 
 type policyStoreAdapter struct {
@@ -51,16 +56,54 @@ type dashboardBackend struct {
 	config     Config
 	engine     Engine
 	store      *policystore.Store
+	sqlStore   *sqlstore.SQLStore
 	publish    func(dashboard.PolicyMutation)
 	controller *policyController
 	feedMgr    *feed.Manager
 }
 
-func (b *dashboardBackend) Config(context.Context) (dashboard.Config, error) {
+func (b *dashboardBackend) Config(ctx context.Context) (dashboard.Config, error) {
 	ranges := make([]string, 0, len(b.config.ListenRanges))
 	for _, prefix := range b.config.ListenRanges {
 		ranges = append(ranges, prefix.String())
 	}
+
+	if b.sqlStore != nil {
+		blCount, wlCount, _ := b.sqlStore.GetCounts(ctx)
+		var blocklistStrings []string
+		var whitelistStrings []string
+		var policyItems []dashboard.PolicyItem
+
+		if blItems, _, err := b.sqlStore.ListPoliciesPaginated(ctx, "blocklist", "", 1, 50); err == nil {
+			for _, it := range blItems {
+				blocklistStrings = append(blocklistStrings, it.Prefix)
+				policyItems = append(policyItems, dashboard.PolicyItem{Prefix: it.Prefix, List: it.List, Source: it.Source})
+			}
+		}
+		if wlItems, _, err := b.sqlStore.ListPoliciesPaginated(ctx, "whitelist", "", 1, 50); err == nil {
+			for _, it := range wlItems {
+				whitelistStrings = append(whitelistStrings, it.Prefix)
+				policyItems = append(policyItems, dashboard.PolicyItem{Prefix: it.Prefix, List: it.List, Source: it.Source})
+			}
+		}
+
+		return dashboard.Config{
+			LocalASN:       b.config.LocalASN,
+			RouterID:       b.config.RouterID.String(),
+			ListenRanges:   ranges,
+			PeerGroup:      "rtbh-dynamic",
+			AllowedASNs:    b.config.AllowedASNs,
+			MaxSessions:    b.config.MaxSessions,
+			DefaultPolicy:  "reject",
+			DryRun:         b.config.DryRun,
+			Blocklist:      blocklistStrings,
+			Whitelist:      whitelistStrings,
+			Policies:       policyItems,
+			BlocklistCount: blCount,
+			WhitelistCount: wlCount,
+		}, nil
+	}
+
 	var blocklistStrings []string
 	if bl, err := b.store.Prefixes(policystore.Blocklist); err == nil {
 		for _, p := range bl {
@@ -206,7 +249,106 @@ func (b *dashboardBackend) ImportFeed(ctx context.Context, req dashboard.FeedImp
 	return result, nil
 }
 
-func (b *dashboardBackend) ListFeeds(context.Context) ([]dashboard.SourceFeed, error) {
+func (b *dashboardBackend) ListPolicies(ctx context.Context, list, search string, page, limit int) (dashboard.PaginatedPolicies, error) {
+	if b.sqlStore != nil {
+		items, total, err := b.sqlStore.ListPoliciesPaginated(ctx, list, search, page, limit)
+		if err != nil {
+			return dashboard.PaginatedPolicies{}, err
+		}
+		var res dashboard.PaginatedPolicies
+		res.Page = page
+		res.Limit = limit
+		res.Total = total
+		if limit > 0 {
+			res.TotalPages = int(math.Ceil(float64(total) / float64(limit)))
+		}
+		for _, it := range items {
+			res.Items = append(res.Items, dashboard.PolicyItem{
+				Prefix: it.Prefix,
+				List:   it.List,
+				Source: it.Source,
+			})
+		}
+		return res, nil
+	}
+
+	// In-memory fallback
+	var all []string
+	targetList := policystore.Blocklist
+	if list == "whitelist" {
+		targetList = policystore.Whitelist
+	}
+	if pList, err := b.store.Prefixes(targetList); err == nil {
+		for _, p := range pList {
+			all = append(all, p.String())
+		}
+	}
+	var filtered []string
+	q := strings.ToLower(strings.TrimSpace(search))
+	for _, p := range all {
+		if q == "" || strings.Contains(strings.ToLower(p), q) {
+			filtered = append(filtered, p)
+		}
+	}
+	total := len(filtered)
+	if limit <= 0 {
+		limit = 25
+	}
+	if page <= 0 {
+		page = 1
+	}
+	start := (page - 1) * limit
+	end := start + limit
+	if start > total {
+		start = total
+	}
+	if end > total {
+		end = total
+	}
+	var res dashboard.PaginatedPolicies
+	res.Page = page
+	res.Limit = limit
+	res.Total = total
+	res.TotalPages = int(math.Ceil(float64(total) / float64(limit)))
+	for _, p := range filtered[start:end] {
+		src := "Manual"
+		if b.feedMgr != nil {
+			if s, ok := b.feedMgr.PrefixSource(p); ok {
+				src = s
+			}
+		}
+		res.Items = append(res.Items, dashboard.PolicyItem{
+			Prefix: p,
+			List:   list,
+			Source: src,
+		})
+	}
+	return res, nil
+}
+
+func (b *dashboardBackend) ListFeeds(ctx context.Context) ([]dashboard.SourceFeed, error) {
+	if b.sqlStore != nil {
+		feeds, err := b.sqlStore.ListFeeds(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var res []dashboard.SourceFeed
+		for _, f := range feeds {
+			res = append(res, dashboard.SourceFeed{
+				ID:            f.ID,
+				Name:          f.Name,
+				List:          f.List,
+				URL:           f.URL,
+				Interval:      f.Interval,
+				Enabled:       f.Enabled,
+				LastSync:      f.LastSync,
+				PrefixCount:   f.PrefixCount,
+				LastError:     f.LastError,
+				ExpandSubnets: f.ExpandSubnets,
+			})
+		}
+		return res, nil
+	}
 	if b.feedMgr == nil {
 		return []dashboard.SourceFeed{}, nil
 	}
@@ -232,7 +374,27 @@ func (b *dashboardBackend) ListFeeds(context.Context) ([]dashboard.SourceFeed, e
 	return res, nil
 }
 
-func (b *dashboardBackend) SaveFeed(_ context.Context, req dashboard.SourceFeed) (dashboard.SourceFeed, error) {
+func (b *dashboardBackend) SaveFeed(ctx context.Context, req dashboard.SourceFeed) (dashboard.SourceFeed, error) {
+	if b.sqlStore != nil {
+		if req.ID == "" {
+			buf := make([]byte, 4)
+			_, _ = rand.Read(buf)
+			req.ID = "feed-" + hex.EncodeToString(buf)
+		}
+		if req.Interval <= 0 {
+			req.Interval = 21600
+		}
+		err := b.sqlStore.SaveFeed(ctx, sqlstore.FeedSource{
+			ID:            req.ID,
+			Name:          req.Name,
+			List:          req.List,
+			URL:           req.URL,
+			Interval:      req.Interval,
+			Enabled:       req.Enabled,
+			ExpandSubnets: req.ExpandSubnets,
+		})
+		return req, err
+	}
 	if b.feedMgr == nil {
 		return req, errors.New("feed manager not initialized")
 	}
@@ -257,6 +419,16 @@ func (b *dashboardBackend) SaveFeed(_ context.Context, req dashboard.SourceFeed)
 }
 
 func (b *dashboardBackend) DeleteFeed(ctx context.Context, id string) error {
+	if b.sqlStore != nil {
+		deletedPrefixes, list, err := b.sqlStore.DeleteFeed(ctx, id)
+		if err != nil {
+			return err
+		}
+		if len(deletedPrefixes) > 0 {
+			_ = b.controller.ApplyBatch(ctx, list, nil, deletedPrefixes)
+		}
+		return nil
+	}
 	if b.feedMgr == nil {
 		return nil
 	}
@@ -264,6 +436,39 @@ func (b *dashboardBackend) DeleteFeed(ctx context.Context, id string) error {
 }
 
 func (b *dashboardBackend) SyncFeed(ctx context.Context, id string) (int, error) {
+	if b.sqlStore != nil {
+		feeds, err := b.sqlStore.ListFeeds(ctx)
+		if err != nil {
+			return 0, err
+		}
+		var target *sqlstore.FeedSource
+		for i := range feeds {
+			if feeds[i].ID == id {
+				target = &feeds[i]
+				break
+			}
+		}
+		if target == nil {
+			return 0, errors.New("feed not found")
+		}
+		prefixes, err := feed.Fetch(ctx, target.URL, target.ExpandSubnets)
+		if err != nil {
+			_ = b.sqlStore.UpdateFeedStatus(ctx, id, 0, "", err.Error())
+			return 0, err
+		}
+		var strPrefixes []string
+		for _, p := range prefixes {
+			strPrefixes = append(strPrefixes, p.String())
+		}
+		toAdd, toRemove, err := b.sqlStore.SyncFeedPolicies(ctx, target.ID, target.Name, target.List, strPrefixes)
+		if err != nil {
+			return 0, err
+		}
+		if err := b.controller.ApplyBatch(ctx, target.List, toAdd, toRemove); err != nil {
+			return len(strPrefixes), err
+		}
+		return len(strPrefixes), nil
+	}
 	if b.feedMgr == nil {
 		return 0, nil
 	}

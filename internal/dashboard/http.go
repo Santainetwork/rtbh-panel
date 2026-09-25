@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -33,7 +34,9 @@ type Config struct {
 	DryRun        bool         `json:"dry_run"`
 	Blocklist     []string     `json:"blocklist,omitempty"`
 	Whitelist     []string     `json:"whitelist,omitempty"`
-	Policies      []PolicyItem `json:"policies,omitempty"`
+	Policies       []PolicyItem `json:"policies,omitempty"`
+	BlocklistCount int          `json:"blocklist_count"`
+	WhitelistCount int          `json:"whitelist_count"`
 }
 
 type Peer struct {
@@ -87,6 +90,18 @@ type FeedManagerBackend interface {
 	SyncFeed(context.Context, string) (int, error)
 }
 
+type PaginatedPolicies struct {
+	Items      []PolicyItem `json:"items"`
+	Total      int          `json:"total"`
+	Page       int          `json:"page"`
+	Limit      int          `json:"limit"`
+	TotalPages int          `json:"total_pages"`
+}
+
+type PolicyPaginator interface {
+	ListPolicies(ctx context.Context, list, search string, page, limit int) (PaginatedPolicies, error)
+}
+
 type Backend interface {
 	Config(context.Context) (Config, error)
 	UpdateConfig(context.Context, Config) error
@@ -120,6 +135,7 @@ func NewHandler(backend Backend, authorize Authorizer, static ...fs.FS) http.Han
 		h.mux.HandleFunc("POST "+prefix+"/feeds/delete", h.deleteFeed)
 		h.mux.HandleFunc("POST "+prefix+"/feeds/sync", h.syncFeed)
 		h.mux.HandleFunc("POST "+prefix+"/policies/bulk-delete", h.bulkDeletePolicies)
+		h.mux.HandleFunc("GET "+prefix+"/policies", h.getPolicies)
 	}
 	h.mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusNotFound, "not found") })
 	h.mux.HandleFunc("GET /", h.index)
@@ -331,6 +347,37 @@ func (h *handler) syncFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "synced", "id": req.ID, "count": count})
+}
+
+func (h *handler) getPolicies(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	paginator, ok := h.backend.(PolicyPaginator)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "paginated policies not supported")
+		return
+	}
+	list := r.URL.Query().Get("list")
+	if list == "" {
+		list = "blocklist"
+	}
+	search := r.URL.Query().Get("search")
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page <= 0 {
+		page = 1
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 25
+	}
+	res, err := paginator.ListPolicies(r.Context(), list, search, page, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (h *handler) bulkDeletePolicies(w http.ResponseWriter, r *http.Request) {
