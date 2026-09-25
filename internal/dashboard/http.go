@@ -16,17 +16,24 @@ import (
 
 const maxBodyBytes = 1 << 20
 
+type PolicyItem struct {
+	Prefix string `json:"prefix"`
+	List   string `json:"list"`
+	Source string `json:"source"`
+}
+
 type Config struct {
-	LocalASN      uint32   `json:"local_asn"`
-	RouterID      string   `json:"router_id"`
-	ListenRanges  []string `json:"listen_ranges"`
-	PeerGroup     string   `json:"peer_group"`
-	AllowedASNs   []uint32 `json:"allowed_asns,omitempty"`
-	MaxSessions   int      `json:"max_sessions"`
-	DefaultPolicy string   `json:"default_policy"`
-	DryRun        bool     `json:"dry_run"`
-	Blocklist     []string `json:"blocklist,omitempty"`
-	Whitelist     []string `json:"whitelist,omitempty"`
+	LocalASN      uint32       `json:"local_asn"`
+	RouterID      string       `json:"router_id"`
+	ListenRanges  []string     `json:"listen_ranges"`
+	PeerGroup     string       `json:"peer_group"`
+	AllowedASNs   []uint32     `json:"allowed_asns,omitempty"`
+	MaxSessions   int          `json:"max_sessions"`
+	DefaultPolicy string       `json:"default_policy"`
+	DryRun        bool         `json:"dry_run"`
+	Blocklist     []string     `json:"blocklist,omitempty"`
+	Whitelist     []string     `json:"whitelist,omitempty"`
+	Policies      []PolicyItem `json:"policies,omitempty"`
 }
 
 type Peer struct {
@@ -112,6 +119,7 @@ func NewHandler(backend Backend, authorize Authorizer, static ...fs.FS) http.Han
 		h.mux.HandleFunc("POST "+prefix+"/feeds", h.saveFeed)
 		h.mux.HandleFunc("POST "+prefix+"/feeds/delete", h.deleteFeed)
 		h.mux.HandleFunc("POST "+prefix+"/feeds/sync", h.syncFeed)
+		h.mux.HandleFunc("POST "+prefix+"/policies/bulk-delete", h.bulkDeletePolicies)
 	}
 	h.mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusNotFound, "not found") })
 	h.mux.HandleFunc("GET /", h.index)
@@ -323,6 +331,33 @@ func (h *handler) syncFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "synced", "id": req.ID, "count": count})
+}
+
+func (h *handler) bulkDeletePolicies(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		List     string   `json:"list"`
+		Prefixes []string `json:"prefixes"`
+		Apply    bool     `json:"apply"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.List != "blocklist" && req.List != "whitelist" {
+		writeError(w, http.StatusBadRequest, "list must be blocklist or whitelist")
+		return
+	}
+	deleted := 0
+	for _, p := range req.Prefixes {
+		if err := h.backend.MutatePolicy(r.Context(), PolicyMutation{
+			Action: "remove",
+			List:   req.List,
+			Prefix: p,
+		}); err == nil {
+			deleted++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "list": req.List})
 }
 
 func (config Config) validate() error {

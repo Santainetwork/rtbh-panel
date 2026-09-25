@@ -73,6 +73,25 @@ func (b *dashboardBackend) Config(context.Context) (dashboard.Config, error) {
 			whitelistStrings = append(whitelistStrings, p.String())
 		}
 	}
+	var policyItems []dashboard.PolicyItem
+	for _, str := range blocklistStrings {
+		source := "Manual"
+		if b.feedMgr != nil {
+			if src, ok := b.feedMgr.PrefixSource(str); ok {
+				source = src
+			}
+		}
+		policyItems = append(policyItems, dashboard.PolicyItem{Prefix: str, Source: source, List: "blocklist"})
+	}
+	for _, str := range whitelistStrings {
+		source := "Manual"
+		if b.feedMgr != nil {
+			if src, ok := b.feedMgr.PrefixSource(str); ok {
+				source = src
+			}
+		}
+		policyItems = append(policyItems, dashboard.PolicyItem{Prefix: str, Source: source, List: "whitelist"})
+	}
 	return dashboard.Config{
 		LocalASN:      b.config.LocalASN,
 		RouterID:      b.config.RouterID.String(),
@@ -84,6 +103,7 @@ func (b *dashboardBackend) Config(context.Context) (dashboard.Config, error) {
 		DryRun:        b.config.DryRun,
 		Blocklist:     blocklistStrings,
 		Whitelist:     whitelistStrings,
+		Policies:      policyItems,
 	}, nil
 }
 
@@ -236,11 +256,11 @@ func (b *dashboardBackend) SaveFeed(_ context.Context, req dashboard.SourceFeed)
 	return req, nil
 }
 
-func (b *dashboardBackend) DeleteFeed(_ context.Context, id string) error {
+func (b *dashboardBackend) DeleteFeed(ctx context.Context, id string) error {
 	if b.feedMgr == nil {
 		return nil
 	}
-	return b.feedMgr.Delete(id)
+	return b.feedMgr.Delete(ctx, id)
 }
 
 func (b *dashboardBackend) SyncFeed(ctx context.Context, id string) (int, error) {

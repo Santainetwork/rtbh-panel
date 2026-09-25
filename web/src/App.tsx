@@ -5,6 +5,7 @@ import {
   Blocks,
   Braces,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   CircleDot,
   Clock3,
@@ -64,6 +65,7 @@ import {
   type DashboardSnapshot,
   type Mutation,
   type PolicyAction,
+  type PolicyItem,
   type PolicyList,
   type SourceFeed,
 } from "@/lib/api"
@@ -89,38 +91,188 @@ function MetricCard({ label, value, detail, icon: Icon, tone = "normal" }: { lab
   )
 }
 
-function PolicyTable({ entries, list, onMutate, onImportFeed }: {
+function PolicyTable({ entries, policyItems = [], list, onMutate, onImportFeed, onBulkDelete }: {
   entries: string[]
+  policyItems?: PolicyItem[]
   list: PolicyList
   onMutate: (list: PolicyList, action: PolicyAction, prefix?: string) => void
   onImportFeed: (list: PolicyList) => void
+  onBulkDelete?: (list: PolicyList, prefixes: string[]) => Promise<void>
 }) {
   const isBlock = list === "blocklist"
+  const [search, setSearch] = useState("")
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(25)
+  const [deleting, setDeleting] = useState(false)
+
+  const sourceMap = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const item of policyItems) {
+      if (item.list === list && item.source) {
+        map.set(item.prefix, item.source)
+      }
+    }
+    return map
+  }, [policyItems, list])
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return entries
+    const q = search.trim().toLowerCase()
+    return entries.filter((p) => {
+      const src = (sourceMap.get(p) || "manual").toLowerCase()
+      return p.toLowerCase().includes(q) || src.includes(q)
+    })
+  }, [entries, search, sourceMap])
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const currentPage = Math.min(page, totalPages)
+  const pageEntries = useMemo(() => {
+    const start = (currentPage - 1) * pageSize
+    return filtered.slice(start, start + pageSize)
+  }, [filtered, currentPage, pageSize])
+
+  const allVisibleSelected = pageEntries.length > 0 && pageEntries.every((p) => selected.has(p))
+  const toggleSelectAll = () => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (allVisibleSelected) {
+        for (const p of pageEntries) next.delete(p)
+      } else {
+        for (const p of pageEntries) next.add(p)
+      }
+      return next
+    })
+  }
+
+  const toggleSelect = (p: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(p)) next.delete(p)
+      else next.add(p)
+      return next
+    })
+  }
+
+  const handleBulkDelete = async () => {
+    if (selected.size === 0 || !onBulkDelete) return
+    if (!confirm(`Are you sure you want to remove ${selected.size} prefixes from ${list}?`)) return
+    setDeleting(true)
+    try {
+      const toDelete = Array.from(selected)
+      await onBulkDelete(list, toDelete)
+      setSelected(new Set())
+      toast.success(`Removed ${toDelete.length} prefixes from ${list}`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to bulk delete")
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <div className="policy-table-wrap">
-      <div className="section-toolbar">
+      <div className="section-toolbar flex-wrap gap-3">
         <div>
-          <p className="section-kicker">{entries.length} active prefixes</p>
+          <p className="section-kicker">{entries.length} total prefixes {filtered.length !== entries.length && `(${filtered.length} matching)`}</p>
           <p className="section-note">{isBlock ? "Advertised with RTBH community after approval." : "Whitelist wins over every block decision."}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {selected.size > 0 && (
+            <Button variant="destructive" size="sm" onClick={handleBulkDelete} disabled={deleting}>
+              <Trash2 className="h-4 w-4" /> Delete Selected ({selected.size})
+            </Button>
+          )}
           <Button onClick={() => onImportFeed(list)} variant="outline" size="sm"><Download /> Import Feed</Button>
           <Button onClick={() => onMutate(list, "add")} size="sm"><Plus /> Add prefix</Button>
         </div>
       </div>
+
+      <div className="flex items-center justify-between gap-3 my-3">
+        <div className="relative flex-1 max-w-sm">
+          <Input
+            placeholder="Search prefix or source..."
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+            className="h-8 text-xs"
+          />
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>Rows per page:</span>
+          <Select value={pageSize.toString()} onValueChange={(v) => { setPageSize(parseInt(v, 10)); setPage(1) }}>
+            <SelectTrigger className="h-7 w-[70px] text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="15">15</SelectItem>
+              <SelectItem value="25">25</SelectItem>
+              <SelectItem value="50">50</SelectItem>
+              <SelectItem value="100">100</SelectItem>
+              <SelectItem value="250">250</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
       <Table>
-        <TableHeader><TableRow><TableHead>Prefix</TableHead><TableHead>Family</TableHead><TableHead>Decision</TableHead><TableHead className="text-right">Control</TableHead></TableRow></TableHeader>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-[40px]">
+              <Checkbox checked={allVisibleSelected} onCheckedChange={toggleSelectAll} aria-label="Select all on page" />
+            </TableHead>
+            <TableHead>Prefix</TableHead>
+            <TableHead>Source</TableHead>
+            <TableHead>Family</TableHead>
+            <TableHead>Decision</TableHead>
+            <TableHead className="text-right">Control</TableHead>
+          </TableRow>
+        </TableHeader>
         <TableBody>
-          {entries.map((prefix) => (
-            <TableRow key={prefix}>
-              <TableCell className="font-mono text-foreground">{prefix}</TableCell>
-              <TableCell><Badge variant="outline">{prefix.includes(":") ? "IPv6" : "IPv4"}</Badge></TableCell>
-              <TableCell><Badge variant={isBlock ? "destructive" : "secondary"}>{isBlock ? "BLACKHOLE" : "ALLOW"}</Badge></TableCell>
-              <TableCell className="text-right"><Button aria-label={`Remove ${prefix}`} onClick={() => onMutate(list, "remove", prefix)} variant="ghost" size="sm">Remove</Button></TableCell>
+          {pageEntries.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={6} className="text-center text-muted-foreground py-6">
+                No prefixes found.
+              </TableCell>
             </TableRow>
-          ))}
+          ) : (
+            pageEntries.map((prefix) => {
+              const src = sourceMap.get(prefix) || "Manual"
+              const isSelected = selected.has(prefix)
+              return (
+                <TableRow key={prefix} data-state={isSelected ? "selected" : undefined}>
+                  <TableCell>
+                    <Checkbox checked={isSelected} onCheckedChange={() => toggleSelect(prefix)} aria-label={`Select ${prefix}`} />
+                  </TableCell>
+                  <TableCell className="font-mono text-foreground font-medium">{prefix}</TableCell>
+                  <TableCell>
+                    <Badge variant={src === "Manual" ? "outline" : "secondary"} className="text-xs">
+                      {src}
+                    </Badge>
+                  </TableCell>
+                  <TableCell><Badge variant="outline">{prefix.includes(":") ? "IPv6" : "IPv4"}</Badge></TableCell>
+                  <TableCell><Badge variant={isBlock ? "destructive" : "secondary"}>{isBlock ? "BLACKHOLE" : "ALLOW"}</Badge></TableCell>
+                  <TableCell className="text-right">
+                    <Button aria-label={`Remove ${prefix}`} onClick={() => onMutate(list, "remove", prefix)} variant="ghost" size="sm">Remove</Button>
+                  </TableCell>
+                </TableRow>
+              )
+            })
+          )}
         </TableBody>
       </Table>
+
+      <div className="flex items-center justify-between border-t pt-3 mt-2 text-xs text-muted-foreground">
+        <div>
+          Showing {pageEntries.length > 0 ? (currentPage - 1) * pageSize + 1 : 0} - {Math.min(currentPage * pageSize, filtered.length)} of {filtered.length} prefixes
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" disabled={currentPage <= 1} onClick={() => setPage(p => p - 1)}>
+            <ChevronLeft className="h-3 w-3" /> Prev
+          </Button>
+          <span>Page {currentPage} of {totalPages}</span>
+          <Button variant="outline" size="sm" disabled={currentPage >= totalPages} onClick={() => setPage(p => p + 1)}>
+            Next <ChevronRight className="h-3 w-3" />
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -440,6 +592,17 @@ function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; re
     }
   }
 
+  const handleBulkDelete = async (list: PolicyList, prefixes: string[]) => {
+    if (api.bulkDelete) {
+      await api.bulkDelete(list, prefixes)
+    } else {
+      for (const prefix of prefixes) {
+        await api.mutate({ list, action: "remove", prefix, apply: true })
+      }
+    }
+    await refresh()
+  }
+
   return (
     <>
       <Sidebar collapsible="icon">
@@ -486,7 +649,7 @@ function Dashboard({ snapshot, refresh, api }: { snapshot: DashboardSnapshot; re
             </div>
           </section>
           <SourcesSection feeds={snapshot.feeds ?? []} onAddFeed={handleAddFeed} onDeleteFeed={handleDeleteFeed} onSyncFeed={handleSyncFeed} />
-          <section id="policies"><div className="section-heading"><div><p className="eyebrow">ROUTE DECISIONS</p><h2>Policy inventory</h2></div><Badge variant="outline"><LockKeyhole /> whitelist precedence</Badge></div><Card><CardContent className="pt-0"><Tabs defaultValue="blocklist"><TabsList variant="line"><TabsTrigger value="blocklist"><ShieldX /> Blocklist <Badge variant="secondary">{snapshot.blocklist.length}</Badge></TabsTrigger><TabsTrigger value="whitelist"><ShieldCheck /> Whitelist <Badge variant="secondary">{snapshot.whitelist.length}</Badge></TabsTrigger></TabsList><TabsContent value="blocklist"><PolicyTable entries={snapshot.blocklist} list="blocklist" onMutate={openMutation} onImportFeed={openImportFeed} /></TabsContent><TabsContent value="whitelist"><PolicyTable entries={snapshot.whitelist} list="whitelist" onMutate={openMutation} onImportFeed={openImportFeed} /></TabsContent></Tabs></CardContent></Card></section>
+          <section id="policies"><div className="section-heading"><div><p className="eyebrow">ROUTE DECISIONS</p><h2>Policy inventory</h2></div><Badge variant="outline"><LockKeyhole /> whitelist precedence</Badge></div><Card><CardContent className="pt-0"><Tabs defaultValue="blocklist"><TabsList variant="line"><TabsTrigger value="blocklist"><ShieldX /> Blocklist <Badge variant="secondary">{snapshot.blocklist.length}</Badge></TabsTrigger><TabsTrigger value="whitelist"><ShieldCheck /> Whitelist <Badge variant="secondary">{snapshot.whitelist.length}</Badge></TabsTrigger></TabsList><TabsContent value="blocklist"><PolicyTable entries={snapshot.blocklist} policyItems={snapshot.policies} list="blocklist" onMutate={openMutation} onImportFeed={openImportFeed} onBulkDelete={handleBulkDelete} /></TabsContent><TabsContent value="whitelist"><PolicyTable entries={snapshot.whitelist} policyItems={snapshot.policies} list="whitelist" onMutate={openMutation} onImportFeed={openImportFeed} onBulkDelete={handleBulkDelete} /></TabsContent></Tabs></CardContent></Card></section>
           <section id="activity"><div className="section-heading"><div><p className="eyebrow">IMMUTABLE TRAIL</p><h2>Recent activity</h2></div><Badge variant="secondary"><Clock3 /> newest first</Badge></div><Card><CardContent><div className="activity-list">{snapshot.audit.map((event) => <div className="activity-row" key={event.id}><div className={`activity-icon ${event.result}`} >{event.result === "allowed" ? <CheckCircle2 /> : <ShieldX />}</div><div className="activity-main"><strong>{event.action}</strong><code>{event.target}</code><span>by {event.actor}</span></div><div className="activity-meta"><Badge variant={event.mode === "DRY RUN" ? "outline" : "secondary"}>{event.mode}</Badge><time>{event.timestamp}</time></div></div>)}</div></CardContent></Card></section>
         </main>
       </SidebarInset>

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -92,19 +91,41 @@ func NewServer(config Config) (*Server, error) {
 	if config.PolicyFile != "" {
 		feedFile = config.PolicyFile + ".feeds.json"
 	}
-	feedMgr, err := feed.OpenManager(feedFile, func(ctx context.Context, sf feed.FeedSource, prefixes []netip.Prefix) error {
-		if sf.List != "blocklist" && sf.List != "whitelist" {
+	feedMgr, err := feed.OpenManager(feedFile,
+		func(ctx context.Context, sf feed.FeedSource, toAdd, toRemove []string) error {
+			if sf.List != "blocklist" && sf.List != "whitelist" {
+				return nil
+			}
+			for _, p := range toRemove {
+				_ = controller.Apply(ctx, dashboard.PolicyMutation{
+					Action: "remove",
+					List:   sf.List,
+					Prefix: p,
+				})
+			}
+			for _, p := range toAdd {
+				_ = controller.Apply(ctx, dashboard.PolicyMutation{
+					Action: "add",
+					List:   sf.List,
+					Prefix: p,
+				})
+			}
 			return nil
-		}
-		for _, p := range prefixes {
-			_ = controller.Apply(ctx, dashboard.PolicyMutation{
-				Action: "add",
-				List:   sf.List,
-				Prefix: p.String(),
-			})
-		}
-		return nil
-	})
+		},
+		func(ctx context.Context, sf feed.FeedSource, prefixes []string) error {
+			if sf.List != "blocklist" && sf.List != "whitelist" {
+				return nil
+			}
+			for _, p := range prefixes {
+				_ = controller.Apply(ctx, dashboard.PolicyMutation{
+					Action: "remove",
+					List:   sf.List,
+					Prefix: p,
+				})
+			}
+			return nil
+		},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: open feed manager: %w", err)
 	}

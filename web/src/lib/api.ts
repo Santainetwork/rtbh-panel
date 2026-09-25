@@ -44,12 +44,19 @@ export interface SourceFeed {
   expand_subnets: boolean
 }
 
+export interface PolicyItem {
+  prefix: string
+  source?: string
+  list: PolicyList
+}
+
 export interface DashboardSnapshot {
   source: "mock" | "http"
   config: DashboardConfig
   peers: Peer[]
   blocklist: string[]
   whitelist: string[]
+  policies?: PolicyItem[]
   audit: AuditEntry[]
   feeds?: SourceFeed[]
 }
@@ -89,6 +96,7 @@ export interface DashboardApi {
   saveFeed?(feed: SourceFeed): Promise<SourceFeed>
   deleteFeed?(id: string): Promise<void>
   syncFeed?(id: string): Promise<{ status: string; count: number }>
+  bulkDelete?(list: PolicyList, prefixes: string[]): Promise<void>
 }
 
 const initialSnapshot: DashboardSnapshot = {
@@ -175,7 +183,7 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
   return {
     async snapshot() {
       const [config, peers, feeds] = await Promise.all([
-        request<{ local_asn: number; router_id: string; listen_ranges: string[]; peer_group: string; allowed_asns?: number[]; max_sessions: number; default_policy: "reject"; dry_run?: boolean; blocklist?: string[]; whitelist?: string[] }>("/api/v1/config"),
+        request<{ local_asn: number; router_id: string; listen_ranges: string[]; peer_group: string; allowed_asns?: number[]; max_sessions: number; default_policy: "reject"; dry_run?: boolean; blocklist?: string[]; whitelist?: string[]; policies?: PolicyItem[] }>("/api/v1/config"),
         request<Array<{ address: string; asn: number; state: PeerState }>>("/api/v1/peers"),
         request<SourceFeed[]>("/api/v1/feeds").catch(() => []),
       ])
@@ -185,6 +193,7 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
         peers: peers.map((peer) => ({ ...peer, uptime: "—", received: 0 })),
         blocklist: config.blocklist ?? [],
         whitelist: config.whitelist ?? [],
+        policies: config.policies ?? [],
         audit: [],
         feeds: feeds ?? [],
       }
@@ -226,6 +235,12 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
       return request<{ status: string; count: number }>("/api/v1/feeds/sync", {
         method: "POST",
         body: JSON.stringify({ id }),
+      })
+    },
+    async bulkDelete(list, prefixes) {
+      await request("/api/v1/policies/bulk-delete", {
+        method: "POST",
+        body: JSON.stringify({ list, prefixes, apply: true }),
       })
     },
   }
