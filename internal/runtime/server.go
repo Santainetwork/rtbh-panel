@@ -201,7 +201,7 @@ func (s *Server) Run(ctx context.Context) error {
 			publish:    s.queue.publish,
 			controller: s.controller,
 			feedMgr:    s.feedMgr,
-		}, func(*http.Request) bool { return true }, webui.Dist()),
+		}, dashboard.BearerTokenAuthorizer(s.config.APIToken), webui.Dist()),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

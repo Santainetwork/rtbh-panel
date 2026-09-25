@@ -121,6 +121,28 @@ func TestLoadServerConfigInsecureListen(t *testing.T) {
 	}
 }
 
+func TestLoadServerConfigAPIToken(t *testing.T) {
+	for _, key := range configEnvironmentKeys {
+		t.Setenv(key, "")
+	}
+	config, err := LoadServerConfig(flag.NewFlagSet("test", flag.ContinueOnError), []string{"--api-token=s3cret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.APIToken != "s3cret" {
+		t.Fatalf("APIToken = %q", config.APIToken)
+	}
+
+	t.Setenv("RTBH_API_TOKEN", "from-env")
+	environmentConfig, err := LoadServerConfig(flag.NewFlagSet("test", flag.ContinueOnError), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if environmentConfig.APIToken != "from-env" {
+		t.Fatalf("env APIToken = %q", environmentConfig.APIToken)
+	}
+}
+
 func TestLoadServerConfigRejectsMismatchedNextHopFamily(t *testing.T) {
 	_, err := LoadServerConfig(flag.NewFlagSet("test", flag.ContinueOnError), []string{"--rtbh-next-hop-v4=2001:db8::1"})
 	if err == nil {

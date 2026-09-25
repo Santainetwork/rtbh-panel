@@ -16,8 +16,10 @@ Local Go control plane for remotely triggered blackholing (RTBH). One `rtbh-serv
 
 - BGP, HTTP, and sync listeners bind loopback only by default. Non-loopback listen without TLS requires explicit `--insecure-listen=true`.
 - BGP default port `4179`; dry-run defaults to `true`.
+- Optional API bearer token: start with `--api-token=<secret>` (or `RTBH_API_TOKEN`) and send `Authorization: Bearer <secret>` on every `/api/*` request. Without the flag the API remains unauthenticated; rely on loopback binding or a fronting proxy.
 - Import and export policies default to reject.
 - Apply is explicit and audited; no shell, BIRD, or FRR adapter.
+- Feed sources created through the API must be public `http(s)://` URLs. Loopback, RFC 1918, link-local, and other non-routable destinations are rejected, and redirects are re-validated at dial time to prevent DNS-rebinding SSRF. The `--blocklist-feed` / `--whitelist-feed` flags still accept local file paths trusted by the operator.
 
 ## Build
 
@@ -104,6 +106,8 @@ You can also connect to external SQL databases via CLI flags or ENV:
 * **MySQL / MariaDB:** `--db-driver=mysql --db-dsn="user:pass@tcp(127.0.0.1:3306)/rtbh?parseTime=true"`
 
 Blocklist add accepts optional future `expires_at` (RFC 3339).
+
+`GET /api/v1/feeds` always returns a JSON array (`[]` when empty), never `null`.
 
 ## Tests
 

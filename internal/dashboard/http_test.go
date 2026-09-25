@@ -18,6 +18,20 @@ type fakeBackend struct {
 	mutations []PolicyMutation
 }
 
+type fakeFeedBackend struct {
+	fakeBackend
+	feeds []SourceFeed
+	saves int
+}
+
+func (f *fakeFeedBackend) ListFeeds(context.Context) ([]SourceFeed, error) { return f.feeds, nil }
+func (f *fakeFeedBackend) SaveFeed(_ context.Context, source SourceFeed) (SourceFeed, error) {
+	f.saves++
+	return source, nil
+}
+func (f *fakeFeedBackend) DeleteFeed(context.Context, string) error      { return nil }
+func (f *fakeFeedBackend) SyncFeed(context.Context, string) (int, error) { return 0, nil }
+
 func TestBlocklistMutationAcceptsFutureExpiryOnly(t *testing.T) {
 	backend := &fakeBackend{}
 	handler := NewHandler(backend, authorized)
@@ -49,6 +63,72 @@ func (f *fakeBackend) MutatePolicy(_ context.Context, mutation PolicyMutation) e
 }
 
 func authorized(*http.Request) bool { return true }
+
+func TestFeedsEmptyResponseIsJSONArray(t *testing.T) {
+	response := httptest.NewRecorder()
+	NewHandler(&fakeFeedBackend{}, authorized).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/feeds", nil))
+	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "[]" {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestBearerTokenAuthorizer(t *testing.T) {
+	authorize := BearerTokenAuthorizer("correct-token")
+	for _, tt := range []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{name: "correct bearer token", header: "Bearer correct-token", want: true},
+		{name: "case insensitive scheme", header: "bearer correct-token", want: true},
+		{name: "wrong token", header: "Bearer wrong-token"},
+		{name: "missing token"},
+		{name: "wrong scheme", header: "Basic correct-token"},
+		{name: "extra value", header: "Bearer correct-token extra"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
+			request.Header.Set("Authorization", tt.header)
+			if got := authorize(request); got != tt.want {
+				t.Fatalf("authorize=%v want %v", got, tt.want)
+			}
+		})
+	}
+	if !BearerTokenAuthorizer("")(httptest.NewRequest(http.MethodGet, "/", nil)) {
+		t.Fatal("empty configured token should preserve unauthenticated mode")
+	}
+}
+
+func TestFeedAPIRejectsLocalURLBeforeSaving(t *testing.T) {
+	backend := &fakeFeedBackend{}
+	response := httptest.NewRecorder()
+	body := `{"name":"local","list":"blocklist","url":"http://127.0.0.1/feed.txt"}`
+	NewHandler(backend, authorized).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/feeds", strings.NewReader(body)))
+	if response.Code != http.StatusBadRequest || backend.saves != 0 {
+		t.Fatalf("status=%d saves=%d body=%s", response.Code, backend.saves, response.Body.String())
+	}
+}
+
+func TestConfiguredBearerTokenProtectsAPIButNotDashboard(t *testing.T) {
+	handler := NewHandler(&fakeBackend{}, BearerTokenAuthorizer("correct-token"))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated API status=%d", response.Code)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
+	request.Header.Set("Authorization", "Bearer correct-token")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("authenticated API status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("dashboard status=%d", response.Code)
+	}
+}
 
 func TestConfigReportsBackendDryRunMode(t *testing.T) {
 	backend := &fakeBackend{config: Config{DryRun: true}}

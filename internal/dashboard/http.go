@@ -3,6 +3,8 @@ package dashboard
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/arcelo/rtbh-panel/internal/feed"
 )
 
 const maxBodyBytes = 1 << 20
@@ -24,16 +28,16 @@ type PolicyItem struct {
 }
 
 type Config struct {
-	LocalASN      uint32       `json:"local_asn"`
-	RouterID      string       `json:"router_id"`
-	ListenRanges  []string     `json:"listen_ranges"`
-	PeerGroup     string       `json:"peer_group"`
-	AllowedASNs   []uint32     `json:"allowed_asns,omitempty"`
-	MaxSessions   int          `json:"max_sessions"`
-	DefaultPolicy string       `json:"default_policy"`
-	DryRun        bool         `json:"dry_run"`
-	Blocklist     []string     `json:"blocklist,omitempty"`
-	Whitelist     []string     `json:"whitelist,omitempty"`
+	LocalASN       uint32       `json:"local_asn"`
+	RouterID       string       `json:"router_id"`
+	ListenRanges   []string     `json:"listen_ranges"`
+	PeerGroup      string       `json:"peer_group"`
+	AllowedASNs    []uint32     `json:"allowed_asns,omitempty"`
+	MaxSessions    int          `json:"max_sessions"`
+	DefaultPolicy  string       `json:"default_policy"`
+	DryRun         bool         `json:"dry_run"`
+	Blocklist      []string     `json:"blocklist,omitempty"`
+	Whitelist      []string     `json:"whitelist,omitempty"`
 	Policies       []PolicyItem `json:"policies,omitempty"`
 	BlocklistCount int          `json:"blocklist_count"`
 	WhitelistCount int          `json:"whitelist_count"`
@@ -147,7 +151,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	if h.backend == nil || h.authorize == nil || !h.authorize(r) {
+	if h.backend == nil || (strings.HasPrefix(r.URL.Path, "/api/") && (h.authorize == nil || !h.authorize(r))) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -260,6 +264,10 @@ func (h *handler) importFeed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "source URL or path is required")
 		return
 	}
+	if err := feed.ValidatePublicURL(r.Context(), request.Source); err != nil {
+		writeError(w, http.StatusBadRequest, "source must be a public HTTP(S) URL")
+		return
+	}
 
 	importer, ok := h.backend.(FeedImporter)
 	if !ok {
@@ -286,6 +294,9 @@ func (h *handler) getFeeds(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if feeds == nil {
+		feeds = []SourceFeed{}
+	}
 	writeJSON(w, http.StatusOK, feeds)
 }
 
@@ -300,12 +311,33 @@ func (h *handler) saveFeed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := feed.ValidatePublicURL(r.Context(), req.URL); err != nil {
+		writeError(w, http.StatusBadRequest, "feed URL must be a public HTTP(S) URL")
+		return
+	}
 	saved, err := manager.SaveFeed(r.Context(), req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, saved)
+}
+
+// BearerTokenAuthorizer returns an authorizer that accepts the configured token.
+// An empty token preserves the default unauthenticated mode.
+func BearerTokenAuthorizer(token string) Authorizer {
+	return func(r *http.Request) bool {
+		if token == "" {
+			return true
+		}
+		scheme, provided, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+		if !ok || !strings.EqualFold(scheme, "Bearer") || provided == "" || strings.Contains(provided, " ") {
+			return false
+		}
+		providedHash := sha256.Sum256([]byte(provided))
+		tokenHash := sha256.Sum256([]byte(token))
+		return subtle.ConstantTimeCompare(providedHash[:], tokenHash[:]) == 1
+	}
 }
 
 func (h *handler) deleteFeed(w http.ResponseWriter, r *http.Request) {

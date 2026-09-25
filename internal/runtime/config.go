@@ -25,53 +25,54 @@ var configEnvironmentKeys = []string{
 	"RTBH_DRY_RUN", "RTBH_SHUTDOWN_TIMEOUT", "RTBH_INSECURE_LISTEN",
 	"RTBH_NEXT_HOP_V4", "RTBH_NEXT_HOP_V6",
 	"RTBH_BLOCKLIST_FEED", "RTBH_WHITELIST_FEED", "RTBH_FEED_INTERVAL", "RTBH_WHITELIST_EXPAND_SLASH24",
-	"RTBH_DB_DRIVER", "RTBH_DB_DSN",
+	"RTBH_DB_DRIVER", "RTBH_DB_DSN", "RTBH_API_TOKEN",
 }
 
 type Config struct {
-	LocalASN                uint32
-	RouterID                netip.Addr
-	BGPListenAddress        string
-	HTTPListenAddress       string
-	SyncListenAddress       string
-	SyncServerAddress       string
-	ListenRanges            []netip.Prefix
-	AllowedASNs             []uint32
-	MaxSessions             int
-	SyncMaxMessageBytes     int
-	SyncMaxInFlight         int
-	ReconnectMin            time.Duration
-	ReconnectMax            time.Duration
-	PolicyFile              string
-	CursorFile              string
-	DryRun                  bool
-	ShutdownTimeout         time.Duration
-	InsecureListen          bool
-	RTBHNextHopV4           netip.Addr
-	RTBHNextHopV6           netip.Addr
-	BlocklistFeed           string
-	WhitelistFeed           string
-	FeedInterval            time.Duration
+	LocalASN               uint32
+	RouterID               netip.Addr
+	BGPListenAddress       string
+	HTTPListenAddress      string
+	SyncListenAddress      string
+	SyncServerAddress      string
+	ListenRanges           []netip.Prefix
+	AllowedASNs            []uint32
+	MaxSessions            int
+	SyncMaxMessageBytes    int
+	SyncMaxInFlight        int
+	ReconnectMin           time.Duration
+	ReconnectMax           time.Duration
+	PolicyFile             string
+	CursorFile             string
+	DryRun                 bool
+	ShutdownTimeout        time.Duration
+	InsecureListen         bool
+	RTBHNextHopV4          netip.Addr
+	RTBHNextHopV6          netip.Addr
+	BlocklistFeed          string
+	WhitelistFeed          string
+	FeedInterval           time.Duration
 	WhitelistExpandSlash24 bool
-	DBDriver                string
-	DBDSN                   string
+	DBDriver               string
+	DBDSN                  string
+	APIToken               string
 }
 
 func DefaultConfig() Config {
 	return Config{
-		LocalASN:            65000,
-		RouterID:            netip.MustParseAddr("192.0.2.1"),
-		BGPListenAddress:    "127.0.0.1:4179",
-		HTTPListenAddress:   "127.0.0.1:8080",
-		SyncListenAddress:   "127.0.0.1:17900",
-		SyncServerAddress:   "127.0.0.1:17900",
-		ListenRanges:        []netip.Prefix{netip.MustParsePrefix("127.0.0.0/24")},
-		MaxSessions:         8,
-		SyncMaxMessageBytes: defaultMaxMessageBytes,
-		SyncMaxInFlight:     defaultMaxInFlight,
-		ReconnectMin:        250 * time.Millisecond,
-		ReconnectMax:        5 * time.Second,
-		DryRun:              true,
+		LocalASN:               65000,
+		RouterID:               netip.MustParseAddr("192.0.2.1"),
+		BGPListenAddress:       "127.0.0.1:4179",
+		HTTPListenAddress:      "127.0.0.1:8080",
+		SyncListenAddress:      "127.0.0.1:17900",
+		SyncServerAddress:      "127.0.0.1:17900",
+		ListenRanges:           []netip.Prefix{netip.MustParsePrefix("127.0.0.0/24")},
+		MaxSessions:            8,
+		SyncMaxMessageBytes:    defaultMaxMessageBytes,
+		SyncMaxInFlight:        defaultMaxInFlight,
+		ReconnectMin:           250 * time.Millisecond,
+		ReconnectMax:           5 * time.Second,
+		DryRun:                 true,
 		ShutdownTimeout:        5 * time.Second,
 		RTBHNextHopV6:          netip.MustParseAddr("::1"),
 		WhitelistExpandSlash24: true,
@@ -122,6 +123,7 @@ func loadConfig(fs *flag.FlagSet, args []string, mode configMode) (Config, error
 		fs.StringVar(&routerID, "router-id", routerID, "IPv4 BGP router ID")
 		fs.StringVar(&config.BGPListenAddress, "bgp-listen", config.BGPListenAddress, "BGP listen address; port -1 disables listening")
 		fs.StringVar(&config.HTTPListenAddress, "http-listen", config.HTTPListenAddress, "dashboard HTTP listen address")
+		fs.StringVar(&config.APIToken, "api-token", config.APIToken, "optional bearer token for API requests")
 		fs.StringVar(&config.SyncListenAddress, "sync-listen", config.SyncListenAddress, "policy-sync server listen address")
 		fs.StringVar(&listenRanges, "listen-ranges", listenRanges, "comma-separated dynamic-neighbor CIDRs")
 		fs.StringVar(&allowedASNs, "allowed-asns", allowedASNs, "comma-separated allowed peer ASNs")
@@ -324,6 +326,7 @@ func applyEnvironment(config *Config) error {
 	applyStringEnv(&config.PolicyFile, "RTBH_POLICY_FILE")
 	applyStringEnv(&config.DBDriver, "RTBH_DB_DRIVER")
 	applyStringEnv(&config.DBDSN, "RTBH_DB_DSN")
+	applyStringEnv(&config.APIToken, "RTBH_API_TOKEN")
 	applyStringEnv(&config.CursorFile, "RTBH_CURSOR_FILE")
 	if config.DryRun, err = envBool("RTBH_DRY_RUN", config.DryRun); err != nil {
 		return err

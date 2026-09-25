@@ -19,6 +19,7 @@ func TestServerRunsDashboardAndPolicySyncOnLoopback(t *testing.T) {
 	cfg.HTTPListenAddress = "127.0.0.1:0"
 	cfg.SyncListenAddress = "127.0.0.1:0"
 	cfg.DryRun = false
+	cfg.APIToken = "test-token"
 	server, err := NewServer(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -37,8 +38,21 @@ func TestServerRunsDashboardAndPolicySyncOnLoopback(t *testing.T) {
 		t.Fatal(err)
 	}
 	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated dashboard API status=%d", response.StatusCode)
+	}
+	requestWithToken, err := http.NewRequest(http.MethodGet, "http://"+server.HTTPAddress()+"/api/config", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestWithToken.Header.Set("Authorization", "Bearer test-token")
+	response, err = http.DefaultClient.Do(requestWithToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("dashboard status=%d", response.StatusCode)
+		t.Fatalf("authenticated dashboard API status=%d", response.StatusCode)
 	}
 
 	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", server.SyncAddress())
@@ -54,6 +68,7 @@ func TestServerRunsDashboardAndPolicySyncOnLoopback(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer test-token")
 	mutationResponse, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)

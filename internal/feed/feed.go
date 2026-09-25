@@ -4,10 +4,13 @@ package feed
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -117,14 +120,18 @@ func Fetch(ctx context.Context, source string, expandSlash24 bool) ([]netip.Pref
 		return nil, nil
 	}
 
-	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+	parsed, parseErr := url.Parse(source)
+	if parseErr == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+		if err := ValidatePublicURL(ctx, source); err != nil {
+			return nil, err
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 		if err != nil {
 			return nil, fmt.Errorf("feed: create request: %w", err)
 		}
 		req.Header.Set("User-Agent", "RTBH-Panel-FeedFetcher/1.0")
 
-		client := &http.Client{Timeout: 30 * time.Second}
+		client := publicHTTPClient()
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("feed: download %s: %w", source, err)
@@ -136,6 +143,9 @@ func Fetch(ctx context.Context, source string, expandSlash24 bool) ([]netip.Pref
 		}
 		return ParseList(resp.Body, expandSlash24)
 	}
+	if parseErr != nil || parsed.Scheme != "" {
+		return nil, errors.New("feed: source must be an HTTP(S) URL or local file path")
+	}
 
 	f, err := os.Open(source)
 	if err != nil {
@@ -143,6 +153,111 @@ func Fetch(ctx context.Context, source string, expandSlash24 bool) ([]netip.Pref
 	}
 	defer f.Close()
 	return ParseList(f, expandSlash24)
+}
+
+var blockedPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("fc00::/7"),
+}
+
+// ValidatePublicURL accepts only HTTP(S) URLs whose current addresses are public.
+func ValidatePublicURL(ctx context.Context, raw string) error {
+	normalized, err := validateURLFormat(raw)
+	if err != nil {
+		return err
+	}
+	parsed, _ := url.Parse(normalized)
+	resolveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupNetIP(resolveCtx, "ip", parsed.Hostname())
+	if err != nil {
+		return fmt.Errorf("feed: resolve public URL host: %w", err)
+	}
+	if len(addresses) == 0 {
+		return errors.New("feed: public URL host has no addresses")
+	}
+	for _, address := range addresses {
+		if !isPublicIP(address) {
+			return fmt.Errorf("feed: URL host resolves to non-public address %s", address)
+		}
+	}
+	return nil
+}
+
+func validateURLFormat(raw string) (string, error) {
+	normalized := strings.TrimSpace(raw)
+	parsed, err := url.Parse(normalized)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
+		return "", errors.New("feed: source must be a public HTTP(S) URL without userinfo")
+	}
+	return normalized, nil
+}
+
+func isPublicIP(address netip.Addr) bool {
+	address = address.Unmap()
+	if !address.IsValid() || !address.IsGlobalUnicast() || address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() {
+		return false
+	}
+	for _, prefix := range blockedPrefixes {
+		if prefix.Contains(address) {
+			return false
+		}
+	}
+	return true
+}
+
+func publicHTTPClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, fmt.Errorf("feed: invalid destination: %w", err)
+		}
+		addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		if err != nil {
+			return nil, fmt.Errorf("feed: resolve destination host %q: %w", host, err)
+		}
+		if len(addresses) == 0 {
+			return nil, fmt.Errorf("feed: destination host %q has no addresses", host)
+		}
+		for _, resolved := range addresses {
+			if !isPublicIP(resolved) {
+				return nil, fmt.Errorf("feed: destination resolves to non-public address %s", resolved)
+			}
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].String(), port))
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("feed: too many redirects")
+			}
+			return ValidatePublicURL(req.Context(), req.URL.String())
+		},
+	}
 }
 
 // SlicesContains is a helper checking if slice contains prefix.
