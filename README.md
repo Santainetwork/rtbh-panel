@@ -14,7 +14,7 @@ Local Go control plane for remotely triggered blackholing (RTBH). One `rtbh-serv
 
 ## Safety defaults
 
-- BGP, HTTP, and sync listeners bind loopback only.
+- BGP, HTTP, and sync listeners bind loopback only by default. Non-loopback listen without TLS requires explicit `--insecure-listen=true`.
 - BGP default port `4179`; dry-run defaults to `true`.
 - Import and export policies default to reject.
 - Apply is explicit and audited; no shell, BIRD, or FRR adapter.

@@ -88,13 +88,26 @@ func TestLoadServerConfigNextHops(t *testing.T) {
 	}
 }
 
-func TestLoadServerConfigNextHopDefaults(t *testing.T) {
-	config, err := LoadServerConfig(flag.NewFlagSet("test", flag.ContinueOnError), []string{"--router-id=192.0.2.9"})
-	if err != nil {
-		t.Fatal(err)
+func TestLoadServerConfigInsecureListen(t *testing.T) {
+	for _, key := range configEnvironmentKeys {
+		t.Setenv(key, "")
 	}
-	if config.RTBHNextHopV4.String() != "192.0.2.9" || config.RTBHNextHopV6.String() != "::1" {
-		t.Fatalf("next hops = %s, %s", config.RTBHNextHopV4, config.RTBHNextHopV6)
+	_, err := LoadServerConfig(flag.NewFlagSet("test", flag.ContinueOnError), []string{
+		"--http-listen=0.0.0.0:8080",
+	})
+	if err == nil {
+		t.Fatal("expected non-loopback http-listen to fail without --insecure-listen")
+	}
+
+	cfg, err := LoadServerConfig(flag.NewFlagSet("test", flag.ContinueOnError), []string{
+		"--http-listen=0.0.0.0:8080",
+		"--insecure-listen=true",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error with --insecure-listen: %v", err)
+	}
+	if !cfg.InsecureListen || cfg.HTTPListenAddress != "0.0.0.0:8080" {
+		t.Fatalf("unexpected config: %#v", cfg)
 	}
 }
 

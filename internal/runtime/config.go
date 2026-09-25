@@ -22,7 +22,7 @@ var configEnvironmentKeys = []string{
 	"RTBH_SYNC_LISTEN", "RTBH_SYNC_SERVER", "RTBH_LISTEN_RANGES", "RTBH_ALLOWED_ASNS",
 	"RTBH_MAX_SESSIONS", "RTBH_MAX_MESSAGE_BYTES", "RTBH_MAX_IN_FLIGHT",
 	"RTBH_RECONNECT_MIN", "RTBH_RECONNECT_MAX", "RTBH_POLICY_FILE", "RTBH_CURSOR_FILE",
-	"RTBH_DRY_RUN", "RTBH_SHUTDOWN_TIMEOUT",
+	"RTBH_DRY_RUN", "RTBH_SHUTDOWN_TIMEOUT", "RTBH_INSECURE_LISTEN",
 	"RTBH_NEXT_HOP_V4", "RTBH_NEXT_HOP_V6",
 }
 
@@ -44,6 +44,7 @@ type Config struct {
 	CursorFile          string
 	DryRun              bool
 	ShutdownTimeout     time.Duration
+	InsecureListen      bool
 	RTBHNextHopV4       netip.Addr
 	RTBHNextHopV6       netip.Addr
 }
@@ -132,6 +133,7 @@ func loadConfig(fs *flag.FlagSet, args []string, mode configMode) (Config, error
 	fs.StringVar(&config.PolicyFile, "policy-file", config.PolicyFile, "optional policy store file")
 	fs.StringVar(&config.CursorFile, "cursor-file", config.CursorFile, "optional applied-cursor file")
 	fs.BoolVar(&config.DryRun, "dry-run", config.DryRun, "use the no-op policy adapter")
+	fs.BoolVar(&config.InsecureListen, "insecure-listen", config.InsecureListen, "allow non-loopback HTTP and sync listen addresses without TLS")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -228,11 +230,13 @@ func (config Config) validateServer() error {
 			return fmt.Errorf("runtime: invalid %s address %q: %w", name, address, err)
 		}
 	}
-	if err := validateLocalAddress("HTTP listen", config.HTTPListenAddress); err != nil {
-		return err
-	}
-	if err := validateLocalAddress("sync listen", config.SyncListenAddress); err != nil {
-		return err
+	if !config.InsecureListen {
+		if err := validateLocalAddress("HTTP listen", config.HTTPListenAddress); err != nil {
+			return err
+		}
+		if err := validateLocalAddress("sync listen", config.SyncListenAddress); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -244,7 +248,10 @@ func (config Config) validateAgent() error {
 	if _, _, err := net.SplitHostPort(config.SyncServerAddress); err != nil {
 		return fmt.Errorf("runtime: invalid sync server address %q: %w", config.SyncServerAddress, err)
 	}
-	return validateLocalAddress("sync server", config.SyncServerAddress)
+	if !config.InsecureListen {
+		return validateLocalAddress("sync server", config.SyncServerAddress)
+	}
+	return nil
 }
 
 func (config Config) syncConfig() agentRPCConfig {
@@ -301,6 +308,9 @@ func applyEnvironment(config *Config) error {
 	applyStringEnv(&config.PolicyFile, "RTBH_POLICY_FILE")
 	applyStringEnv(&config.CursorFile, "RTBH_CURSOR_FILE")
 	if config.DryRun, err = envBool("RTBH_DRY_RUN", config.DryRun); err != nil {
+		return err
+	}
+	if config.InsecureListen, err = envBool("RTBH_INSECURE_LISTEN", config.InsecureListen); err != nil {
 		return err
 	}
 	if raw := os.Getenv("RTBH_NEXT_HOP_V4"); raw != "" {
