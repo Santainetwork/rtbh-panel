@@ -24,29 +24,34 @@ var configEnvironmentKeys = []string{
 	"RTBH_RECONNECT_MIN", "RTBH_RECONNECT_MAX", "RTBH_POLICY_FILE", "RTBH_CURSOR_FILE",
 	"RTBH_DRY_RUN", "RTBH_SHUTDOWN_TIMEOUT", "RTBH_INSECURE_LISTEN",
 	"RTBH_NEXT_HOP_V4", "RTBH_NEXT_HOP_V6",
+	"RTBH_BLOCKLIST_FEED", "RTBH_WHITELIST_FEED", "RTBH_FEED_INTERVAL", "RTBH_WHITELIST_EXPAND_SLASH24",
 }
 
 type Config struct {
-	LocalASN            uint32
-	RouterID            netip.Addr
-	BGPListenAddress    string
-	HTTPListenAddress   string
-	SyncListenAddress   string
-	SyncServerAddress   string
-	ListenRanges        []netip.Prefix
-	AllowedASNs         []uint32
-	MaxSessions         int
-	SyncMaxMessageBytes int
-	SyncMaxInFlight     int
-	ReconnectMin        time.Duration
-	ReconnectMax        time.Duration
-	PolicyFile          string
-	CursorFile          string
-	DryRun              bool
-	ShutdownTimeout     time.Duration
-	InsecureListen      bool
-	RTBHNextHopV4       netip.Addr
-	RTBHNextHopV6       netip.Addr
+	LocalASN                uint32
+	RouterID                netip.Addr
+	BGPListenAddress        string
+	HTTPListenAddress       string
+	SyncListenAddress       string
+	SyncServerAddress       string
+	ListenRanges            []netip.Prefix
+	AllowedASNs             []uint32
+	MaxSessions             int
+	SyncMaxMessageBytes     int
+	SyncMaxInFlight         int
+	ReconnectMin            time.Duration
+	ReconnectMax            time.Duration
+	PolicyFile              string
+	CursorFile              string
+	DryRun                  bool
+	ShutdownTimeout         time.Duration
+	InsecureListen          bool
+	RTBHNextHopV4           netip.Addr
+	RTBHNextHopV6           netip.Addr
+	BlocklistFeed           string
+	WhitelistFeed           string
+	FeedInterval            time.Duration
+	WhitelistExpandSlash24 bool
 }
 
 func DefaultConfig() Config {
@@ -64,8 +69,9 @@ func DefaultConfig() Config {
 		ReconnectMin:        250 * time.Millisecond,
 		ReconnectMax:        5 * time.Second,
 		DryRun:              true,
-		ShutdownTimeout:     5 * time.Second,
-		RTBHNextHopV6:       netip.MustParseAddr("::1"),
+		ShutdownTimeout:        5 * time.Second,
+		RTBHNextHopV6:          netip.MustParseAddr("::1"),
+		WhitelistExpandSlash24: true,
 	}
 }
 
@@ -122,6 +128,10 @@ func loadConfig(fs *flag.FlagSet, args []string, mode configMode) (Config, error
 		fs.IntVar(&config.SyncMaxInFlight, "sync-max-inflight", config.SyncMaxInFlight, "alias for --max-in-flight")
 		fs.StringVar(&rtbhNextHopV4, "rtbh-next-hop-v4", rtbhNextHopV4, "RTBH route IPv4 next hop; defaults to router ID")
 		fs.StringVar(&rtbhNextHopV6, "rtbh-next-hop-v6", rtbhNextHopV6, "RTBH route IPv6 next hop")
+		fs.StringVar(&config.BlocklistFeed, "blocklist-feed", config.BlocklistFeed, "optional URL or file path for blocklist feed")
+		fs.StringVar(&config.WhitelistFeed, "whitelist-feed", config.WhitelistFeed, "optional URL or file path for whitelist feed")
+		fs.DurationVar(&config.FeedInterval, "feed-interval", config.FeedInterval, "periodic feed download interval (0 disables periodic reload)")
+		fs.BoolVar(&config.WhitelistExpandSlash24, "whitelist-expand-slash24", config.WhitelistExpandSlash24, "expand /24 in whitelist feed into 256 /32 prefixes")
 	}
 	if mode != configServer {
 		fs.StringVar(&config.SyncServerAddress, "sync-server", config.SyncServerAddress, "policy-sync server address")
@@ -311,6 +321,14 @@ func applyEnvironment(config *Config) error {
 		return err
 	}
 	if config.InsecureListen, err = envBool("RTBH_INSECURE_LISTEN", config.InsecureListen); err != nil {
+		return err
+	}
+	applyStringEnv(&config.BlocklistFeed, "RTBH_BLOCKLIST_FEED")
+	applyStringEnv(&config.WhitelistFeed, "RTBH_WHITELIST_FEED")
+	if config.FeedInterval, err = envDuration("RTBH_FEED_INTERVAL", config.FeedInterval); err != nil {
+		return err
+	}
+	if config.WhitelistExpandSlash24, err = envBool("RTBH_WHITELIST_EXPAND_SLASH24", config.WhitelistExpandSlash24); err != nil {
 		return err
 	}
 	if raw := os.Getenv("RTBH_NEXT_HOP_V4"); raw != "" {

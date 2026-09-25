@@ -41,6 +41,20 @@ make build
 
 Open `http://127.0.0.1:8080`.
 
+### Text Feeds (Pastebin / URL / Local File)
+
+You can sync blocklist and whitelist from plain text files or raw pastebin URLs (one IP/CIDR per line, `#` comments ignored):
+
+```sh
+./bin/rtbh-server \
+  --blocklist-feed="https://pastebin.com/raw/xxxxxx" \
+  --whitelist-feed="/etc/rtbh/whitelist.txt" \
+  --feed-interval=10m \
+  --whitelist-expand-slash24=true
+```
+
+* `--whitelist-expand-slash24=true` (default): If an IPv4 `/24` (e.g. `1.1.1.0/24`) is listed in the whitelist, it automatically expands into all 256 individual `/32` host entries (`1.1.1.0/32` through `1.1.1.255/32`).
+
 Apply mode (explicit):
 
 ```sh

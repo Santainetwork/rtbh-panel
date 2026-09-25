@@ -144,6 +144,9 @@ func (s *Server) Run(ctx context.Context) error {
 	if !s.config.DryRun {
 		go func() { errCh <- s.controller.RunExpiry(runCtx) }()
 	}
+	if s.config.BlocklistFeed != "" || s.config.WhitelistFeed != "" {
+		go func() { errCh <- s.runFeedSync(runCtx) }()
+	}
 	s.once.Do(func() { close(s.started) })
 
 	var runErr error
