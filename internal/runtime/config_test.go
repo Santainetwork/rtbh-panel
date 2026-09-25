@@ -76,6 +76,16 @@ func TestLoadConfigRequiresPolicyFileWhenApplyIsEnabled(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAllowsDBDSNWhenApplyIsEnabled(t *testing.T) {
+	for _, key := range configEnvironmentKeys {
+		t.Setenv(key, "")
+	}
+	_, err := LoadConfig(flag.NewFlagSet("test", flag.ContinueOnError), []string{"--dry-run=false", "--db-driver=sqlite", "--db-dsn=policy.db"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadServerConfigNextHops(t *testing.T) {
 	config, err := LoadServerConfig(flag.NewFlagSet("test", flag.ContinueOnError), []string{
 		"--rtbh-next-hop-v4=192.0.2.254", "--rtbh-next-hop-v6=2001:db8::ffff",

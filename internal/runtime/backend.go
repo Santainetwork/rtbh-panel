@@ -27,7 +27,15 @@ func NewConfiguredAdapter(config Config) (PolicyAdapter, error) {
 	if config.DryRun {
 		return &DryRunAdapter{}, nil
 	}
-	store, err := policystore.Open(config.PolicyFile)
+	targetFile := config.PolicyFile
+	if targetFile == "" {
+		targetFile = config.DBDSN
+	}
+	if strings.HasSuffix(targetFile, ".db") || strings.HasSuffix(targetFile, ".sqlite") || config.DBDriver != "" {
+		store := policystore.New()
+		return &policyStoreAdapter{store: store}, nil
+	}
+	store, err := policystore.Open(targetFile)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: open policy store: %w", err)
 	}

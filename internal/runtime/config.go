@@ -211,8 +211,8 @@ func (config Config) validateCommon() error {
 	if config.SyncMaxMessageBytes < 1 || config.SyncMaxInFlight < 1 {
 		return errors.New("runtime: policy-sync limits must be positive")
 	}
-	if !config.DryRun && strings.TrimSpace(config.PolicyFile) == "" {
-		return errors.New("runtime: policy file is required when apply mode is enabled")
+	if !config.DryRun && strings.TrimSpace(config.PolicyFile) == "" && strings.TrimSpace(config.DBDSN) == "" {
+		return errors.New("runtime: policy file or database DSN is required when apply mode is enabled")
 	}
 	return nil
 }
