@@ -63,8 +63,8 @@ func ParseList(r io.Reader, expandSlash24 bool) ([]netip.Prefix, error) {
 		}
 
 		prefix = prefix.Masked()
-		if expandSlash24 && prefix.Addr().Is4() && prefix.Bits() == 24 {
-			for _, p32 := range ExpandIPv4Slash24(prefix) {
+		if expandSlash24 && prefix.Addr().Is4() && prefix.Bits() >= 16 && prefix.Bits() < 32 {
+			for _, p32 := range ExpandIPv4ToSlash32(prefix) {
 				addPrefix(p32)
 			}
 		} else {
@@ -78,19 +78,34 @@ func ParseList(r io.Reader, expandSlash24 bool) ([]netip.Prefix, error) {
 	return prefixes, nil
 }
 
-// ExpandIPv4Slash24 expands an IPv4 /24 prefix into all 256 /32 prefixes (.0 to .255).
-func ExpandIPv4Slash24(prefix netip.Prefix) []netip.Prefix {
+// ExpandIPv4ToSlash32 expands an IPv4 subnet (/16 to /31, e.g. /19, /22, /23, /24) into all individual /32 host prefixes.
+// Prefixes wider than /16 are not expanded to prevent accidental memory exhaustion.
+func ExpandIPv4ToSlash32(prefix netip.Prefix) []netip.Prefix {
 	prefix = prefix.Masked()
-	if !prefix.Addr().Is4() || prefix.Bits() != 24 {
+	if !prefix.Addr().Is4() || prefix.Bits() < 16 || prefix.Bits() == 32 {
 		return []netip.Prefix{prefix}
 	}
+	count := 1 << (32 - prefix.Bits())
 	b := prefix.Addr().As4()
-	res := make([]netip.Prefix, 256)
-	for i := 0; i < 256; i++ {
-		addr := netip.AddrFrom4([4]byte{b[0], b[1], b[2], byte(i)})
+	baseInt := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+
+	res := make([]netip.Prefix, count)
+	for i := 0; i < count; i++ {
+		curr := baseInt + uint32(i)
+		addr := netip.AddrFrom4([4]byte{
+			byte(curr >> 24),
+			byte(curr >> 16),
+			byte(curr >> 8),
+			byte(curr),
+		})
 		res[i] = netip.PrefixFrom(addr, 32)
 	}
 	return res
+}
+
+// ExpandIPv4Slash24 is a backward-compatible alias for ExpandIPv4ToSlash32.
+func ExpandIPv4Slash24(prefix netip.Prefix) []netip.Prefix {
+	return ExpandIPv4ToSlash32(prefix)
 }
 
 // Fetch loads and parses a feed from an HTTP(S) URL or local file path.

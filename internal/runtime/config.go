@@ -131,7 +131,8 @@ func loadConfig(fs *flag.FlagSet, args []string, mode configMode) (Config, error
 		fs.StringVar(&config.BlocklistFeed, "blocklist-feed", config.BlocklistFeed, "optional URL or file path for blocklist feed")
 		fs.StringVar(&config.WhitelistFeed, "whitelist-feed", config.WhitelistFeed, "optional URL or file path for whitelist feed")
 		fs.DurationVar(&config.FeedInterval, "feed-interval", config.FeedInterval, "periodic feed download interval (0 disables periodic reload)")
-		fs.BoolVar(&config.WhitelistExpandSlash24, "whitelist-expand-slash24", config.WhitelistExpandSlash24, "expand /24 in whitelist feed into 256 /32 prefixes")
+		fs.BoolVar(&config.WhitelistExpandSlash24, "whitelist-expand-slash24", config.WhitelistExpandSlash24, "expand subnets (/16 to /31) in whitelist feed into /32 prefixes")
+		fs.BoolVar(&config.WhitelistExpandSlash24, "whitelist-expand-subnets", config.WhitelistExpandSlash24, "alias for --whitelist-expand-slash24")
 	}
 	if mode != configServer {
 		fs.StringVar(&config.SyncServerAddress, "sync-server", config.SyncServerAddress, "policy-sync server address")

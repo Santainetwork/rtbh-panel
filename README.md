@@ -53,7 +53,16 @@ You can sync blocklist and whitelist from plain text files or raw pastebin URLs 
   --whitelist-expand-slash24=true
 ```
 
-* `--whitelist-expand-slash24=true` (default): If an IPv4 `/24` (e.g. `1.1.1.0/24`) is listed in the whitelist, it automatically expands into all 256 individual `/32` host entries (`1.1.1.0/32` through `1.1.1.255/32`).
+* `--whitelist-expand-slash24=true` (or `--whitelist-expand-subnets=true`, default `true`): If an IPv4 subnet between `/16` and `/31` (such as `/19`, `/22`, `/23`, `/24`) is listed in the whitelist feed, it automatically expands into all individual `/32` host entries (e.g. 256 hosts for `/24`, 1,024 for `/22`, 8,192 for `/19`) into the whitelist.
+
+### Web Dashboard Policy Management
+
+You can add and remove blocklist and whitelist prefixes directly via the Web Dashboard:
+1. Open the dashboard at `http://<IP>:8080`.
+2. Scroll to **Policy inventory** (`Blocklist` or `Whitelist` tab).
+3. Click **+ Add prefix** to input a CIDR (or **Remove** on an existing row).
+4. Run preview (dry-run), check the confirmation checkbox, and click **Apply mutation**.
+*Note: To allow permanent changes to be applied from the web interface, run `rtbh-server` with `--dry-run=false --policy-file=policy.json`.*
 
 Apply mode (explicit):
 

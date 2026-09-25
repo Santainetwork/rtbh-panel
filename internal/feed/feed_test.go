@@ -54,10 +54,30 @@ func TestExpandIPv4Slash24(t *testing.T) {
 		t.Errorf("last prefix = %s, want 1.1.1.255/32", expanded[255])
 	}
 
-	// Non /24 prefix should not be expanded
-	slash25 := netip.MustParsePrefix("1.1.1.0/25")
-	notExp := ExpandIPv4Slash24(slash25)
-	if len(notExp) != 1 || notExp[0] != slash25 {
-		t.Fatalf("slash25 unexpectedly expanded: %v", notExp)
+	// Test /23 expansion (512 host IPs)
+	slash23 := netip.MustParsePrefix("1.1.0.0/23")
+	exp23 := ExpandIPv4ToSlash32(slash23)
+	if len(exp23) != 512 {
+		t.Fatalf("slash23: got %d prefixes, want 512", len(exp23))
+	}
+	if exp23[0].String() != "1.1.0.0/32" || exp23[511].String() != "1.1.1.255/32" {
+		t.Fatalf("slash23 bounds: first=%s, last=%s", exp23[0], exp23[511])
+	}
+
+	// Test /19 expansion (8192 host IPs)
+	slash19 := netip.MustParsePrefix("10.0.0.0/19")
+	exp19 := ExpandIPv4ToSlash32(slash19)
+	if len(exp19) != 8192 {
+		t.Fatalf("slash19: got %d prefixes, want 8192", len(exp19))
+	}
+	if exp19[0].String() != "10.0.0.0/32" || exp19[8191].String() != "10.0.31.255/32" {
+		t.Fatalf("slash19 bounds: first=%s, last=%s", exp19[0], exp19[8191])
+	}
+
+	// Non-expandable prefix (< /16)
+	slash15 := netip.MustParsePrefix("10.0.0.0/15")
+	notExp := ExpandIPv4ToSlash32(slash15)
+	if len(notExp) != 1 || notExp[0] != slash15 {
+		t.Fatalf("slash15 unexpectedly expanded: %v", notExp)
 	}
 }

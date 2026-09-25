@@ -1,30 +1,45 @@
-# Example configuration
-# Copy to a private deployment location. Do not commit credentials or production values.
+# RTBH Panel - Complete Configuration Reference
+# Copy to a private deployment location (e.g. /etc/rtbh-panel/config.yaml or use flags/env).
 
-listen_address: "127.0.0.1:179"
-# Production uses the native in-process BGP listener on TCP/179.
-# Dynamic passive neighbors must initiate the session.
-listen_ranges:
+# --- Identity & BGP Settings ---
+local_asn: 65000                        # Local Autonomous System Number (ASN)
+router_id: "192.0.2.1"                  # BGP Router ID (IPv4 format)
+bgp_listen: "127.0.0.1:4179"            # Port 179 for production (requires root/CAP_NET_BIND_SERVICE)
+listen_ranges:                          # Accepted peer CIDRs (learned dynamically)
   - "127.0.0.1/32"
   - "192.0.2.0/24"
-
-local_asn: 65000
-router_id: "192.0.2.1"
+allowed_asns:                           # Allowed remote peer ASNs (omit to allow any ASN within listen_ranges)
+  - 64512
+  - 64513
+max_sessions: 32                        # Maximum concurrent dynamic BGP sessions
 peer_group: "rtbh-dynamic"
 
-# Optional. Omit to allow any ASN that passes the other checks.
-allowed_asns:
-  - 64512
-max_sessions: 32
+# Next-Hop overrides for RTBH advertisements
+rtbh_next_hop_v4: "192.0.2.1"           # IPv4 Next-Hop (defaults to router_id if omitted)
+rtbh_next_hop_v6: "::1"                 # IPv6 Next-Hop (defaults to ::1 if omitted)
 
-dry_run: true
+# --- Web Dashboard & API ---
+http_listen: "127.0.0.1:8080"           # Set to 0.0.0.0:8080 for remote access (requires insecure_listen: true)
+insecure_listen: false                  # Allow non-loopback HTTP/sync listen without TLS (set true if on VPS without reverse proxy)
 
-policy_sync:
-  # RPC is for policy synchronization only, never general BGP control.
-  endpoint: "unix:///run/rtbh-panel/policy-sync.sock"
-  request_timeout: "5s"
-  max_message_bytes: 1048576
+# --- Policy Sync & Agent RPC ---
+sync_listen: "127.0.0.1:17900"          # Policy-sync server listen address
+sync_server: "127.0.0.1:17900"          # Target address used by rtbh-agent to connect
+max_message_bytes: 1048576              # Maximum framed message size (1 MiB)
+max_in_flight: 16                       # Maximum unacknowledged streaming messages
+reconnect_min: "250ms"                  # Agent reconnect backoff minimum
+reconnect_max: "5s"                     # Agent reconnect backoff maximum
 
-# Safe default: reject. Unknown peers, invalid policies, authorization failures,
-# and policy-sync errors must not advertise routes.
-default_action: reject
+# --- Safety & Operating Mode ---
+dry_run: true                           # Default true (safe mode). Set false to allow real BGP announcement & web apply
+policy_file: "/etc/rtbh-panel/policy.json" # Persistent JSON file for stored blocklist/whitelist
+cursor_file: "/var/run/rtbh-agent.cursor"  # Agent stream offset tracking file
+shutdown_timeout: "5s"                  # Graceful shutdown timeout
+default_action: reject                  # Unmatched traffic default action
+
+# --- External Feeds (Pastebin / URL / Text File Sync) ---
+# Automatically download and sync list of IPs/CIDRs from external URL or local file:
+blocklist_feed: "https://pastebin.com/raw/example-blocklist" # URL or file path (1 IP/CIDR per line)
+whitelist_feed: "https://pastebin.com/raw/example-whitelist" # URL or file path (1 IP/CIDR per line)
+feed_interval: "15m"                    # Sync interval (e.g. 10m, 1h). Set 0 to fetch only once on startup
+whitelist_expand_subnets: true          # Expand subnets (/16 to /24) in whitelist into individual /32 host entries
