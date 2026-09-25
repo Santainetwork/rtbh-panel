@@ -220,14 +220,21 @@ export function createHttpApi(fetcher: typeof fetch = fetch): DashboardApi {
         feeds: feeds ?? [],
       }
     },
-    getPolicies(list, page, limit, search) {
+    async getPolicies(list, page, limit, search) {
       const params = new URLSearchParams({
         list,
         page: String(page),
         limit: String(limit),
       })
       if (search) params.set("search", search)
-      return request<PaginatedPolicies>(`/api/v1/policies?${params.toString()}`)
+      const res = await request<PaginatedPolicies>(`/api/v1/policies?${params.toString()}`)
+      return {
+        page: res?.page ?? page,
+        limit: res?.limit ?? limit,
+        total: res?.total ?? 0,
+        total_pages: res?.total_pages ?? 1,
+        items: res?.items ?? [],
+      }
     },
     mutate(mutation) {
       const path = mutation.list === "blocklist" ? "/api/v1/block" : "/api/v1/whitelist"

@@ -391,7 +391,7 @@ func (s *SQLStore) ListPoliciesPaginated(ctx context.Context, list string, searc
 	}
 	defer rows.Close()
 
-	var items []PolicyItem
+	items := make([]PolicyItem, 0)
 	for rows.Next() {
 		var it PolicyItem
 		var feedID, expiresAt sql.NullString

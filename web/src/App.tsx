@@ -118,7 +118,7 @@ function PolicyTable({ entries, policyItems = [], list, api, totalCount, onMutat
       try {
         const res = await fetchFn(list, page, pageSize, search)
         if (active) {
-          setServerData({ items: res.items, total: res.total, totalPages: res.total_pages })
+          setServerData({ items: res?.items ?? [], total: res?.total ?? 0, totalPages: res?.total_pages ?? 1 })
         }
       } catch {
         // fallback to memory
@@ -153,7 +153,7 @@ function PolicyTable({ entries, policyItems = [], list, api, totalCount, onMutat
   const effectiveTotal = serverData ? serverData.total : (totalCount ?? entries.length)
 
   const pageEntries = useMemo(() => {
-    if (serverData) return serverData.items.map(it => it.prefix)
+    if (serverData) return (serverData.items ?? []).map(it => it.prefix)
     const start = (currentPage - 1) * pageSize
     return filtered.slice(start, start + pageSize)
   }, [serverData, filtered, currentPage, pageSize])
@@ -260,7 +260,7 @@ function PolicyTable({ entries, policyItems = [], list, api, totalCount, onMutat
             </TableRow>
           ) : (
             pageEntries.map((prefix) => {
-              const it = serverData?.items.find(i => i.prefix === prefix)
+              const it = serverData?.items?.find(i => i.prefix === prefix)
               const src = it?.source || sourceMap.get(prefix) || "Manual"
               const isSelected = selected.has(prefix)
               return (

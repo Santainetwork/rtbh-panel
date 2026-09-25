@@ -263,10 +263,12 @@ func (b *dashboardBackend) ListPolicies(ctx context.Context, list, search string
 		if err != nil {
 			return dashboard.PaginatedPolicies{}, err
 		}
-		var res dashboard.PaginatedPolicies
-		res.Page = page
-		res.Limit = limit
-		res.Total = total
+		res := dashboard.PaginatedPolicies{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			Items:      make([]dashboard.PolicyItem, 0),
+		}
 		if limit > 0 {
 			res.TotalPages = int(math.Ceil(float64(total) / float64(limit)))
 		}
@@ -313,11 +315,13 @@ func (b *dashboardBackend) ListPolicies(ctx context.Context, list, search string
 	if end > total {
 		end = total
 	}
-	var res dashboard.PaginatedPolicies
-	res.Page = page
-	res.Limit = limit
-	res.Total = total
-	res.TotalPages = int(math.Ceil(float64(total) / float64(limit)))
+	res := dashboard.PaginatedPolicies{
+		Page:       page,
+		Limit:      limit,
+		Total:      total,
+		TotalPages: int(math.Ceil(float64(total) / float64(limit))),
+		Items:      make([]dashboard.PolicyItem, 0),
+	}
 	for _, p := range filtered[start:end] {
 		src := "Manual"
 		if b.feedMgr != nil {
